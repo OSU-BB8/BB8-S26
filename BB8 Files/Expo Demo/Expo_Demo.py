@@ -7,7 +7,7 @@ from pupil_apriltags import Detector
 
 # --- 1. CONFIGURATION ---
 # Updated to hard-coded Body Pi IP
-MOTOR_PI_IP = "10.227.99.163"  
+MOTOR_PI_IP = "10.xxx.xx.xxx"  
 UDP_PORT = 5005
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
