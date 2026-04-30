@@ -7,7 +7,7 @@ from picamera2 import Picamera2
 from pupil_apriltags import Detector
 
 # --- 1. CONFIGURATION ---
-MOTOR_PI_IP = "10.227.99.163"  # <--- UPDATED: Hardcoded Body Pi IP on eduroam
+MOTOR_PI_IP = "10.xxx.xx.xxx"  # <--- UPDATED: Hardcoded Body Pi IP on eduroam
 UDP_PORT = 5005
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
