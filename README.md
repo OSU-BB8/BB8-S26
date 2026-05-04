@@ -12,7 +12,7 @@ PS5 Controller Mode:
 2. Plug in the 24V LiPo battery to the robot. This connects to everything except the Pi (which is a Pi 4B - definitely could use the upgrade to a 5, which should be in the materials).
 3. Plug in the 3.7V with boost converter into the Pi and disconnect anything external from it.
 4. Connect the shell so that it encapsulates the entire robot.
-5. SSH into the body Pi. The user is "bb8camera" and password is "password" (I know right).
+5. SSH into the body Pi. The user is "bb8" and password is "password" (I know right).
 6. Navigate to /'BB8 Files'/'Body Files' 
 7. Run the python files "PS5_Controller.py"
 8. This will give you a menu of options to select. The two main ones are options 5 and 6. Choose 5 if you want the option that will balance the head and balance the body (Although the pendulum body balancer doesn't work well since the PID values are 0 for now). Option 6 gives the user full control over all the motors and functions.
@@ -24,3 +24,4 @@ Head-Body Communication:
 4. Make sure both the Body and the Head Pi's are turned on. 
 5. Run Body_communication.py ON THE BODY. This opens up a UDP socket and waits for commands from the head.
 6. Run Head_Communication.py ON THE HEAD. This allows you to send commands from the head to the body.
+7. If you want to SSH into the head Pi, the user is "bb8camera" and the password is "password".
