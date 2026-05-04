@@ -18,6 +18,9 @@ PS5 Controller Mode:
 8. This will give you a menu of options to select. The two main ones are options 5 and 6. Choose 5 if you want the option that will balance the head and balance the body (Although the pendulum body balancer doesn't work well since the PID values are 0 for now). Option 6 gives the user full control over all the motors and functions.
 
 Head-Body Communication:
-1. Instead of pairing the PS5 Controller, go to the file "Expo_Demo.py" in 'BB8 Files'/'Expo Demo'. Replace the IP address in it with the new body IP address.
-2. You'll want to power up the head's Pi. This can be found on the picar, which we used for testing and then placed inside the head for Demo purposes.
-3. 
+1.You'll want to power up the head's Pi. This can be found on the picar, which we used for testing and then placed inside the head for Demo purposes.
+2. Plug in the Head's Pi and navigate to the terminal. Form here, you should look at the terminal and find out the IP address.
+3. Instead of pairing the PS5 Controller, go to the file "Expo_Demo.py" in 'BB8 Files'/'Expo Demo'. Replace the IP address in it with the new body IP address.
+4. Make sure both the Body and the Head Pi's are turned on. 
+5. Run Body_communication.py ON THE BODY. This opens up a UDP socket and waits for commands from the head.
+6. Run Head_Communication.py ON THE HEAD. This allows you to send commands from the head to the body.
