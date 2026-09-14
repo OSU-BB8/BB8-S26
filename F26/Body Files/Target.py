@@ -1,11 +1,17 @@
 # ============================================================
-# Leash_Mode.py
+# Target.py
 #
 # Autonomous BB-8 "Leash Mode"
 #
-# Inputs from beacon:
-#     distance_ft  = distance from BB-8 to person
-#     angle_deg    = angle of person relative to BB-8
+# Current input:
+#     Test_Target.py fake beacon
+#
+# Future input:
+#     UWB AoA beacon
+#
+# Beacon values:
+#     distance_ft = distance from BB-8 to person, in FEET
+#     angle_deg   = angle of person relative to BB-8
 #
 # Angle convention:
 #      0 deg = directly in front
@@ -17,24 +23,24 @@
 #     FAR + ALIGNED
 #         -> drive straight
 #
-#     FAR + OFF-ANGLE
-#         -> drive in a smooth arc using pendulum steering
+#     FAR + OFF ANGLE
+#         -> drive in an arc using pendulum steering
 #
-#     CLOSE + OFF-ANGLE
-#         -> stop and pivot using pirouette motor
+#     CLOSE + LARGE ANGLE
+#         -> stop and pivot with pirouette/reaction wheel
 #
-#     INSIDE LEASH ZONE
-#         -> stop
+#     TARGET FAR BEHIND
+#         -> pivot first regardless of distance
 #
-# If beacon signal is lost:
-#         -> STOP
+#     LOST BEACON
+#         -> stop immediately
 #
 # ============================================================
 
 
 import os
 
-# Must be set before importing Movement_Functions
+# Must be set BEFORE importing Movement_Functions
 os.environ["GPIOZERO_PIN_FACTORY"] = "pigpio"
 
 import time
@@ -42,6 +48,11 @@ import math
 
 from Movement_Functions import BB8Movement
 from Test_Target import TargetTestUI
+
+
+# ============================================================
+# TEST BEACON
+# ============================================================
 
 test_beacon = TargetTestUI()
 
@@ -55,24 +66,19 @@ test_beacon = TargetTestUI()
 # 1. LEASH DISTANCE
 # ------------------------------------------------------------
 
-# BB-8 stops following once it gets this close.
-#
-# Using two thresholds creates hysteresis:
-#
-#   > FOLLOW_START_DISTANCE_FT -> start following
-#   < FOLLOW_STOP_DISTANCE_FT  -> stop following
-#
-# This prevents BB-8 from constantly starting/stopping at 10 ft.
-
+# Start following once the person moves this far away.
 FOLLOW_START_DISTANCE_FT = 10.0
+
+# Once following, stop when the person gets this close.
+#
+# The difference between START and STOP provides hysteresis
+# so BB-8 doesn't rapidly start/stop around one distance.
 FOLLOW_STOP_DISTANCE_FT = 8.5
 
-
-# Never intentionally move toward the person below this distance.
+# Absolute minimum allowed distance.
 HARD_MIN_DISTANCE_FT = 6.0
 
-
-# Ignore obviously bad beacon readings.
+# Reject obviously bad readings.
 MAX_VALID_DISTANCE_FT = 100.0
 
 
@@ -80,157 +86,123 @@ MAX_VALID_DISTANCE_FT = 100.0
 # 2. DRIVE SPEED
 # ------------------------------------------------------------
 
-# Start LOW during testing.
+# Maximum forward command.
 #
-# Existing PS5 code normally uses around 0.3.
+# You tested 0.70 successfully.
+# Reduce this during early autonomous testing if desired.
+MAX_DRIVE_SPEED = 0.70
 
-MAX_DRIVE_SPEED = 0.30
+# Minimum useful moving speed.
 MIN_DRIVE_SPEED = 0.12
 
-
-# Distance above FOLLOW_STOP_DISTANCE where maximum speed is reached.
-#
-# Example:
-#
-#   FOLLOW_STOP_DISTANCE = 8.5
-#   FULL_SPEED_DISTANCE   = 18
-#
-# At 9 ft  -> slow
-# At 18 ft -> full MAX_DRIVE_SPEED
-
+# At this distance or farther, BB-8 reaches MAX_DRIVE_SPEED.
 FULL_SPEED_DISTANCE_FT = 18.0
 
-
-# Limits how quickly commanded drive speed changes.
+# Acceleration/deceleration rate.
 #
-# Smaller = smoother acceleration.
-# Units are command units / second.
-
+# Units:
+# command per second
+#
+# Example:
+# 0.40 means approximately 1.75 seconds from 0 -> 0.70.
 DRIVE_ACCEL_RATE = 0.40
 DRIVE_DECEL_RATE = 0.70
 
+# Smallest speed change worth sending to gpiozero.
+#
+# THIS IS IMPORTANT:
+# Once the requested speed stops changing, we stop resending
+# the same command to the motor driver.
+DRIVE_COMMAND_EPSILON = 0.001
+
 
 # ------------------------------------------------------------
-# 3. HEADING / ANGLE SETTINGS
+# 3. ANGLE / HEADING
 # ------------------------------------------------------------
 
-# If beacon is inside this angle, treat it as straight ahead.
+# Consider target straight ahead inside +/- this amount.
 ANGLE_DEADBAND_DEG = 6.0
 
-
-# When close to the person, pivot if heading error exceeds this.
+# When close to the person, start pivoting above this error.
 CLOSE_PIVOT_START_ANGLE_DEG = 22.0
 
-
-# Once pivoting, continue until target is inside this angle.
-#
-# Smaller than PIVOT_START gives hysteresis.
-
+# Once pivoting, stop pivoting below this error.
 PIVOT_STOP_ANGLE_DEG = 8.0
 
+# If target is farther behind than this angle,
+# pivot regardless of distance.
+REAR_PIVOT_ANGLE_DEG = 65.0
+
 
 # ------------------------------------------------------------
-# 4. DISTANCE-BASED MOVEMENT STYLE
+# 4. DISTANCE-BASED NAVIGATION STYLE
 # ------------------------------------------------------------
 
-# If farther away than this, BB-8 prefers a smooth arc instead
-# of stopping and pivoting.
-
-ARC_PREFERRED_DISTANCE_FT = 14.0
-
-
-# If closer than this, use pivoting for large heading errors.
-
+# Inside this range, a sufficiently large heading error
+# causes BB-8 to pivot before driving.
 CLOSE_NAV_DISTANCE_FT = 14.0
-
-# If target is far enough behind BB-8, always pivot first.
-REAR_PIVOT_ANGLE_DEG = 100.0
 
 
 # ------------------------------------------------------------
 # 5. PENDULUM ARC STEERING
 # ------------------------------------------------------------
 
-# Pendulum center.
 SWING_CENTER_DEG = 90.0
 
-
-# Maximum steering offset from center.
-#
-# Current Movement_Functions clamps the servo command to
-# approximately 70-117 degrees, so +/- 14 gives room.
-
+# Maximum pendulum steering offset from center.
 MAX_SWING_OFFSET_DEG = 14.0
 
-
-# Converts heading error into pendulum shift.
+# Angle-to-pendulum gain.
 #
 # Example:
-#     20 degree target error * 0.35 = 7 degree swing offset
-
+# 20 degree heading error * 0.35 = 7 degree servo offset
 SWING_KP = 0.35
 
-
-# If BB-8 arcs the WRONG direction, change this from +1 to -1.
+# Reverse this if arc steering goes the wrong direction.
 SWING_DIRECTION = -1
 
-
-# Don't make tiny pendulum adjustments.
+# Ignore tiny pendulum offsets.
 MIN_SWING_OFFSET_DEG = 1.5
 
-
-# Maximum pendulum change per second.
-#
-# This makes the arc enter/exit smoothly rather than snapping.
-
+# Maximum servo movement rate.
 SWING_SLEW_RATE_DEG_PER_SEC = 35.0
 
+# Do not resend essentially identical servo commands.
+SWING_COMMAND_EPSILON_DEG = 0.05
+
 
 # ------------------------------------------------------------
-# 6. PIROUETTE / PIVOT SETTINGS
+# 6. PIROUETTE / REACTION WHEEL
 # ------------------------------------------------------------
 
-# Converts heading error into steer() command.
-
+# Converts heading error into bb8.steer() command.
 PIVOT_KP = 0.022
 
-
-# Minimum command that actually causes useful rotation.
-
+# Minimum useful reaction wheel command.
 MIN_PIVOT_COMMAND = 0.35
 
-
-# Maximum reaction-wheel command.
-
+# Maximum reaction wheel command.
 MAX_PIVOT_COMMAND = 0.85
 
+# Reverse if pivoting turns the wrong direction.
+PIVOT_DIRECTION = -1
 
-# If pivot turns the WRONG direction, change this to -1.
-
-PIVOT_DIRECTION = 1
+# Don't resend essentially identical turn commands.
+STEER_COMMAND_EPSILON = 0.01
 
 
 # ------------------------------------------------------------
-# 7. BEACON FILTERING
+# 7. BEACON FILTER
 # ------------------------------------------------------------
 
-# Exponential moving average.
+# EMA smoothing:
 #
-# Higher number:
-#     more responsive
-#     more jitter
-#
-# Lower number:
-#     smoother
-#     more delay
-
+# Higher = more responsive / noisier
+# Lower  = smoother / slower
 DISTANCE_FILTER_ALPHA = 0.25
 ANGLE_FILTER_ALPHA = 0.30
 
-
-# If no valid beacon packet arrives for this long:
-# STOP IMMEDIATELY.
-
+# Stop if no valid beacon data arrives for this long.
 BEACON_TIMEOUT_SEC = 0.50
 
 
@@ -241,22 +213,18 @@ BEACON_TIMEOUT_SEC = 0.50
 LOOP_HZ = 50.0
 LOOP_TIME = 1.0 / LOOP_HZ
 
-
-# How frequently status is printed to terminal.
-
 PRINT_INTERVAL_SEC = 0.25
 
 
 # ============================================================
-# BEACON INTERFACE
+# FUTURE REAL BEACON INTERFACE
 # ============================================================
 
 def get_beacon_data():
     """
-    Replace the contents of this function with the actual
-    interface for your chosen UWB AoA beacon.
+    Future interface for the real UWB AoA beacon.
 
-    This function MUST return either:
+    Return:
 
         (distance_ft, angle_deg)
 
@@ -264,24 +232,15 @@ def get_beacon_data():
 
         return 14.7, -22.5
 
-    Meaning:
+    meaning:
 
         person is 14.7 ft away
-        person is 22.5 degrees LEFT of BB-8
+        person is 22.5 degrees LEFT
 
-    Or return:
+    Return None if no fresh beacon packet is available.
 
-        None
-
-    if no fresh/valid beacon data is available.
-
-
-    ----------------------------------------------------------
-    IMPORTANT
-    ----------------------------------------------------------
-
-    This placeholder intentionally returns None so BB-8
-    CANNOT MOVE until the real beacon interface is added.
+    This function is currently NOT used while Test_Target.py
+    is providing fake target information.
     """
 
     return None
@@ -292,13 +251,12 @@ def get_beacon_data():
 # ============================================================
 
 def clamp(value, minimum, maximum):
-
     return max(minimum, min(maximum, value))
 
 
 def move_toward(current, target, max_change):
     """
-    Slew-rate limiter.
+    Move current toward target by no more than max_change.
     """
 
     if target > current:
@@ -312,7 +270,7 @@ def move_toward(current, target, max_change):
 
 def normalize_angle(angle_deg):
     """
-    Normalize angle to -180...+180 degrees.
+    Normalize angle to -180 ... +180 degrees.
     """
 
     while angle_deg > 180:
@@ -346,7 +304,7 @@ class BeaconFilter:
 
         angle_deg = normalize_angle(angle_deg)
 
-        # First measurement
+        # First valid reading
         if self.filtered_distance is None:
 
             self.filtered_distance = distance_ft
@@ -358,7 +316,10 @@ class BeaconFilter:
             )
 
 
+        # --------------------------
         # Distance EMA
+        # --------------------------
+
         self.filtered_distance = (
             DISTANCE_FILTER_ALPHA * distance_ft
             + (1.0 - DISTANCE_FILTER_ALPHA)
@@ -366,9 +327,11 @@ class BeaconFilter:
         )
 
 
-        # ----------------------------------------------------
-        # Angle EMA with wrap-around protection
-        # ----------------------------------------------------
+        # --------------------------
+        # Angle EMA
+        #
+        # Use wrap-safe angle error.
+        # --------------------------
 
         angle_error = normalize_angle(
             angle_deg - self.filtered_angle
@@ -387,7 +350,7 @@ class BeaconFilter:
 
 
 # ============================================================
-# NAVIGATION CONTROLLER
+# LEASH CONTROLLER
 # ============================================================
 
 class LeashController:
@@ -396,37 +359,134 @@ class LeashController:
 
         self.bb8 = bb8
 
-        # --------------------------
-        # Navigation state
-        # --------------------------
+
+        # ----------------------------------------------------
+        # NAVIGATION STATE
+        # ----------------------------------------------------
 
         self.following = False
-
         self.pivoting = False
 
+        self.state = "STARTUP"
 
-        # --------------------------
-        # Smooth command tracking
-        # --------------------------
+
+        # ----------------------------------------------------
+        # DESIRED / SMOOTHED COMMANDS
+        # ----------------------------------------------------
 
         self.current_drive_command = 0.0
-
         self.current_swing_command = SWING_CENTER_DEG
 
 
-        # --------------------------
-        # Beacon safety
-        # --------------------------
+        # ----------------------------------------------------
+        # LAST COMMAND ACTUALLY SENT TO HARDWARE
+        #
+        # These are separate because the controller runs at
+        # 50 Hz, but we do NOT want to resend an unchanged
+        # motor command 50 times per second.
+        # ----------------------------------------------------
+
+        self.last_drive_hardware_command = None
+        self.last_swing_hardware_command = None
+        self.last_steer_hardware_command = None
+
+
+        # ----------------------------------------------------
+        # BEACON SAFETY
+        # ----------------------------------------------------
 
         self.last_valid_beacon_time = None
 
 
-        # --------------------------
-        # Status
-        # --------------------------
+    # ========================================================
+    # DRIVE HARDWARE INTERFACE
+    # ========================================================
 
-        self.state = "STARTUP"
-        bb8.spin_head(-0.1)
+    def send_drive_command(self, command, force=False):
+        """
+        Send drive command only if it actually changed.
+
+        This prevents the repeated gpiozero writes that caused
+        the main drive motors to periodically stutter.
+        """
+
+        command = clamp(
+            command,
+            -MAX_DRIVE_SPEED,
+            MAX_DRIVE_SPEED
+        )
+
+
+        if (
+            force
+            or self.last_drive_hardware_command is None
+            or abs(
+                command
+                - self.last_drive_hardware_command
+            ) >= DRIVE_COMMAND_EPSILON
+        ):
+
+            self.bb8.drive(command)
+
+            self.last_drive_hardware_command = command
+
+
+    # ========================================================
+    # STEER HARDWARE INTERFACE
+    # ========================================================
+
+    def send_steer_command(self, command, force=False):
+        """
+        Avoid repeatedly sending an unchanged reaction-wheel
+        command when it isn't necessary.
+        """
+
+        command = clamp(command, -1.0, 1.0)
+
+
+        if (
+            force
+            or self.last_steer_hardware_command is None
+            or abs(
+                command
+                - self.last_steer_hardware_command
+            ) >= STEER_COMMAND_EPSILON
+        ):
+
+            self.bb8.steer(command)
+
+            self.last_steer_hardware_command = command
+
+
+    # ========================================================
+    # SWING HARDWARE INTERFACE
+    # ========================================================
+
+    def send_swing_command(self, degrees, force=False):
+        """
+        Avoid repeatedly writing the exact same PCA9685 servo
+        position when nothing has changed.
+        """
+
+        degrees = clamp(
+            degrees,
+            SWING_CENTER_DEG - MAX_SWING_OFFSET_DEG,
+            SWING_CENTER_DEG + MAX_SWING_OFFSET_DEG
+        )
+
+
+        if (
+            force
+            or self.last_swing_hardware_command is None
+            or abs(
+                degrees
+                - self.last_swing_hardware_command
+            ) >= SWING_COMMAND_EPSILON_DEG
+        ):
+
+            self.bb8.set_swing(degrees)
+
+            self.last_swing_hardware_command = degrees
 
 
     # ========================================================
@@ -435,9 +495,9 @@ class LeashController:
 
     def calculate_drive_speed(self, distance_ft):
         """
-        Calculate forward speed based on distance.
+        Calculate forward speed from target distance.
 
-        Close -> slow
+        Close -> slower
         Far   -> faster
         """
 
@@ -464,7 +524,10 @@ class LeashController:
         speed = (
             MIN_DRIVE_SPEED
             + progress
-            * (MAX_DRIVE_SPEED - MIN_DRIVE_SPEED)
+            * (
+                MAX_DRIVE_SPEED
+                - MIN_DRIVE_SPEED
+            )
         )
 
 
@@ -481,9 +544,7 @@ class LeashController:
 
     def calculate_swing_target(self, angle_deg):
         """
-        Convert heading error into pendulum steering.
-
-        Larger angle -> larger center-of-gravity shift.
+        Convert target angle into pendulum shift.
         """
 
         if abs(angle_deg) <= ANGLE_DEADBAND_DEG:
@@ -504,7 +565,7 @@ class LeashController:
         )
 
 
-        # Prevent useless tiny commands
+        # Avoid tiny ineffective offsets
         if 0 < abs(offset) < MIN_SWING_OFFSET_DEG:
 
             offset = math.copysign(
@@ -522,11 +583,10 @@ class LeashController:
 
     def calculate_pivot_command(self, angle_deg):
         """
-        Convert heading error into reaction-wheel command.
+        Convert target angle into reaction-wheel command.
         """
 
         if abs(angle_deg) <= PIVOT_STOP_ANGLE_DEG:
-
             return 0.0
 
 
@@ -537,7 +597,7 @@ class LeashController:
         )
 
 
-        # Minimum useful turn strength
+        # Enforce minimum useful command
         if 0 < abs(command) < MIN_PIVOT_COMMAND:
 
             command = math.copysign(
@@ -554,10 +614,18 @@ class LeashController:
 
 
     # ========================================================
-    # SMOOTH HARDWARE COMMANDS
+    # SMOOTH DRIVE COMMAND
     # ========================================================
 
     def command_drive(self, target, dt):
+        """
+        Slew the requested drive command toward target.
+
+        IMPORTANT:
+        An unchanged final command is NOT continuously resent
+        to gpiozero. This prevents the stuttering found during
+        testing.
+        """
 
         target = clamp(
             target,
@@ -566,6 +634,7 @@ class LeashController:
         )
 
 
+        # Determine acceleration vs deceleration
         if abs(target) > abs(self.current_drive_command):
 
             rate = DRIVE_ACCEL_RATE
@@ -578,17 +647,31 @@ class LeashController:
         max_change = rate * dt
 
 
-        self.current_drive_command = move_toward(
+        new_command = move_toward(
             self.current_drive_command,
             target,
             max_change
         )
 
 
-        self.bb8.drive(
+        # Snap very tiny differences exactly to target
+        if abs(new_command - target) < DRIVE_COMMAND_EPSILON:
+            new_command = target
+
+
+        # Store controller state
+        self.current_drive_command = new_command
+
+
+        # Hardware write occurs ONLY when command changed
+        self.send_drive_command(
             self.current_drive_command
         )
 
+
+    # ========================================================
+    # SMOOTH PENDULUM COMMAND
+    # ========================================================
 
     def command_swing(self, target, dt):
 
@@ -605,14 +688,24 @@ class LeashController:
         )
 
 
-        self.current_swing_command = move_toward(
+        new_command = move_toward(
             self.current_swing_command,
             target,
             max_change
         )
 
 
-        self.bb8.set_swing(
+        if (
+            abs(new_command - target)
+            < SWING_COMMAND_EPSILON_DEG
+        ):
+            new_command = target
+
+
+        self.current_swing_command = new_command
+
+
+        self.send_swing_command(
             self.current_swing_command
         )
 
@@ -622,8 +715,13 @@ class LeashController:
     # ========================================================
 
     def stop_motion(self, dt):
+        """
+        Controlled stop.
 
-        self.bb8.steer(0.0)
+        Drive ramps down instead of immediately jumping to zero.
+        """
+
+        self.send_steer_command(0.0)
 
         self.command_drive(
             0.0,
@@ -637,17 +735,29 @@ class LeashController:
 
 
     # ========================================================
-    # EMERGENCY / SIGNAL-LOSS STOP
+    # EMERGENCY STOP
     # ========================================================
 
     def emergency_stop(self):
+        """
+        Immediate stop used for invalid/lost beacon data.
+        """
 
-        self.bb8.drive(0.0)
+        # Force the commands through even if our cached value
+        # happens to already say zero.
+        self.send_drive_command(
+            0.0,
+            force=True
+        )
 
-        self.bb8.steer(0.0)
+        self.send_steer_command(
+            0.0,
+            force=True
+        )
 
-        self.bb8.set_swing(
-            SWING_CENTER_DEG
+        self.send_swing_command(
+            SWING_CENTER_DEG,
+            force=True
         )
 
 
@@ -659,7 +769,7 @@ class LeashController:
 
 
     # ========================================================
-    # MAIN NAVIGATION DECISION
+    # MAIN NAVIGATION UPDATE
     # ========================================================
 
     def update(self, distance_ft, angle_deg, dt):
@@ -668,7 +778,7 @@ class LeashController:
 
 
         # ----------------------------------------------------
-        # Validate data
+        # VALIDATE BEACON DATA
         # ----------------------------------------------------
 
         if not math.isfinite(distance_ft):
@@ -699,6 +809,7 @@ class LeashController:
             return
 
 
+        # This packet is valid.
         self.last_valid_beacon_time = time.time()
 
 
@@ -713,7 +824,8 @@ class LeashController:
             self.following = False
             self.pivoting = False
 
-            self.stop_motion(dt)
+            # Immediate stop because the person is very close.
+            self.emergency_stop()
 
             return
 
@@ -724,7 +836,8 @@ class LeashController:
 
         if not self.following:
 
-            # Don't restart until target gets outside 10 ft
+            # Don't start moving again until target is at
+            # least FOLLOW_START_DISTANCE_FT away.
             if distance_ft < FOLLOW_START_DISTANCE_FT:
 
                 self.state = "IN LEASH ZONE"
@@ -739,7 +852,8 @@ class LeashController:
 
         else:
 
-            # Once following, continue until 8.5 ft
+            # Once following, continue until target gets
+            # inside FOLLOW_STOP_DISTANCE_FT.
             if distance_ft <= FOLLOW_STOP_DISTANCE_FT:
 
                 self.following = False
@@ -753,21 +867,24 @@ class LeashController:
 
 
         # ====================================================
-        # PIVOT STATE HYSTERESIS
+        # EXISTING PIVOT STATE
         # ====================================================
 
         if self.pivoting:
 
-            # Stay in pivot mode until well aligned
+            # Don't bounce in/out of pivot mode.
             if abs(angle_deg) <= PIVOT_STOP_ANGLE_DEG:
 
                 self.pivoting = False
+
+                # Explicitly stop reaction wheel once aligned.
+                self.send_steer_command(0.0)
 
             else:
 
                 self.state = "PIVOT"
 
-                # Stop translational motion while pivoting
+                # Stop forward motion
                 self.command_drive(
                     0.0,
                     dt
@@ -779,37 +896,36 @@ class LeashController:
                     dt
                 )
 
+                # Turn body
                 pivot_command = (
                     self.calculate_pivot_command(
                         angle_deg
                     )
                 )
 
-                self.bb8.steer(
+                self.send_steer_command(
                     pivot_command
                 )
 
                 return
+
+
         # ====================================================
         # TARGET FAR BEHIND
-        #
-        # If the target is significantly behind BB-8,
-        # pivot first regardless of distance.
         # ====================================================
 
         if abs(angle_deg) >= REAR_PIVOT_ANGLE_DEG:
 
             self.state = "PIVOT"
-
             self.pivoting = True
 
-            # Stop driving while rotating
+            # Stop translational movement
             self.command_drive(
                 0.0,
                 dt
             )
 
-            # Center pendulum while rotating
+            # Center pendulum
             self.command_swing(
                 SWING_CENTER_DEG,
                 dt
@@ -821,11 +937,12 @@ class LeashController:
                 )
             )
 
-            self.bb8.steer(
+            self.send_steer_command(
                 pivot_command
             )
 
             return
+
 
         # ====================================================
         # TARGET STRAIGHT AHEAD
@@ -835,13 +952,16 @@ class LeashController:
 
             self.state = "STRAIGHT"
 
-            self.bb8.steer(0.0)
+            # Pirouette motor should be off.
+            self.send_steer_command(0.0)
 
+            # Center the pendulum.
             self.command_swing(
                 SWING_CENTER_DEG,
                 dt
             )
 
+            # Calculate distance-based drive speed.
             speed = self.calculate_drive_speed(
                 distance_ft
             )
@@ -856,8 +976,6 @@ class LeashController:
 
         # ====================================================
         # CLOSE + LARGE ANGLE
-        #
-        # Pivot before driving.
         # ====================================================
 
         if (
@@ -871,15 +989,20 @@ class LeashController:
 
             self.pivoting = True
 
+
+            # Stop forward motion.
             self.command_drive(
                 0.0,
                 dt
             )
 
+
+            # Center pendulum.
             self.command_swing(
                 SWING_CENTER_DEG,
                 dt
             )
+
 
             pivot_command = (
                 self.calculate_pivot_command(
@@ -887,7 +1010,8 @@ class LeashController:
                 )
             )
 
-            self.bb8.steer(
+
+            self.send_steer_command(
                 pivot_command
             )
 
@@ -896,17 +1020,16 @@ class LeashController:
 
         # ====================================================
         # ARC MODE
-        #
-        # Target is far enough away that BB-8 can take a
-        # sweeping curve rather than stopping to rotate.
         # ====================================================
 
         self.state = "ARC"
 
-        # Reaction wheel is NOT used during normal arc driving.
-        self.bb8.steer(0.0)
+
+        # Reaction wheel is NOT needed for normal arc.
+        self.send_steer_command(0.0)
 
 
+        # Calculate pendulum steering.
         swing_target = (
             self.calculate_swing_target(
                 angle_deg
@@ -920,13 +1043,14 @@ class LeashController:
         )
 
 
+        # Calculate forward speed.
         speed = self.calculate_drive_speed(
             distance_ft
         )
 
 
         # ----------------------------------------------------
-        # Reduce speed for sharp arcs
+        # SLOW DOWN DURING SHARPER ARCS
         # ----------------------------------------------------
 
         angle_strength = clamp(
@@ -958,19 +1082,22 @@ class LeashController:
 
 
     # ========================================================
-    # WATCHDOG
+    # BEACON WATCHDOG
     # ========================================================
 
     def check_beacon_timeout(self):
 
+        # No valid beacon has ever been received.
         if self.last_valid_beacon_time is None:
 
             self.state = "WAITING FOR BEACON"
+
             self.emergency_stop()
 
             return True
 
 
+        # Beacon was present but became stale.
         if (
             time.time()
             - self.last_valid_beacon_time
@@ -978,6 +1105,7 @@ class LeashController:
         ):
 
             self.state = "BEACON LOST"
+
             self.emergency_stop()
 
             return True
@@ -1000,13 +1128,13 @@ def main():
 
 
     # --------------------------------------------------------
-    # Initialize BB-8 hardware
+    # INITIALIZE HARDWARE
     # --------------------------------------------------------
 
     bb8 = BB8Movement()
 
 
-    # Make absolutely sure everything begins stopped.
+    # Make sure everything starts stopped.
     bb8.stop_all()
 
 
@@ -1015,16 +1143,24 @@ def main():
     beacon_filter = BeaconFilter()
 
 
-    # Enable motor/servo power.
-    #
-    # This does NOT mean BB-8 immediately moves.
-    # It will only move after receiving valid beacon data.
-
+    # Enable motor / servo power.
     bb8.enable_system()
 
 
     print("Hardware enabled.")
-    print("Waiting for valid beacon data...")
+    print("")
+    print("TEST TARGET MODE")
+    print("")
+    print("Enter:")
+    print("    distance_ft angle_deg")
+    print("")
+    print("Examples:")
+    print("    20 0")
+    print("    20 20")
+    print("    12 30")
+    print("    12 90")
+    print("")
+    print("Use 'stop' in Test_Target to remove target.")
     print("")
 
 
@@ -1044,12 +1180,15 @@ def main():
             # DELTA TIME
             # =================================================
 
-            dt = loop_start - last_loop_time
+            dt = (
+                loop_start
+                - last_loop_time
+            )
+
             last_loop_time = loop_start
 
 
-            # Protect against weird timing after pauses/debugging
-
+            # Protect against weird timing after a pause.
             dt = clamp(
                 dt,
                 0.001,
@@ -1058,22 +1197,39 @@ def main():
 
 
             # =================================================
-            # GET BEACON DATA
+            # GET TEST BEACON DATA
             # =================================================
 
             test_beacon.update()
 
-            distance_ft, angle_deg = test_beacon.get_target()
+            distance_ft, angle_deg = (
+                test_beacon.get_target()
+            )
 
-            # No target entered yet, or "stop" was entered
-            if distance_ft is not None and angle_deg is not None:
+
+            # =================================================
+            # VALID TARGET
+            # =================================================
+
+            if (
+                distance_ft is not None
+                and
+                angle_deg is not None
+            ):
 
                 try:
-                    distance_ft = float(distance_ft)
-                    angle_deg = float(angle_deg)
+
+                    distance_ft = float(
+                        distance_ft
+                    )
+
+                    angle_deg = float(
+                        angle_deg
+                    )
+
 
                     # -----------------------------------------
-                    # Filter measurement
+                    # FILTER BEACON DATA
                     # -----------------------------------------
 
                     (
@@ -1084,8 +1240,9 @@ def main():
                         angle_deg
                     )
 
+
                     # -----------------------------------------
-                    # Run navigation
+                    # NAVIGATION UPDATE
                     # -----------------------------------------
 
                     controller.update(
@@ -1094,14 +1251,17 @@ def main():
                         dt
                     )
 
+
                     # -----------------------------------------
-                    # Status output
+                    # STATUS
                     # -----------------------------------------
 
                     if (
-                        loop_start - last_print_time
+                        loop_start
+                        - last_print_time
                         >= PRINT_INTERVAL_SEC
                     ):
+
                         print(
                             f"{controller.state:18} | "
                             f"D={filtered_distance:5.1f} ft | "
@@ -1112,12 +1272,27 @@ def main():
 
                         last_print_time = loop_start
 
+
                 except (TypeError, ValueError):
-                    print("[WARNING] Invalid test target.")
+
+                    print(
+                        "[WARNING] Invalid test target."
+                    )
 
 
             # =================================================
-            # SIGNAL-LOSS WATCHDOG
+            # NO TARGET
+            # =================================================
+
+            else:
+
+                # If the test target is removed, watchdog
+                # will stop BB-8 after BEACON_TIMEOUT_SEC.
+                pass
+
+
+            # =================================================
+            # BEACON WATCHDOG
             # =================================================
 
             controller.check_beacon_timeout()
@@ -1151,7 +1326,7 @@ def main():
 
 
     # ========================================================
-    # UNEXPECTED ERROR
+    # ERROR
     # ========================================================
 
     except Exception as error:
@@ -1168,15 +1343,18 @@ def main():
 
     finally:
 
-        print(
-            "Stopping BB-8..."
-        )
+        print("")
+        print("Stopping BB-8...")
 
+
+        # Direct hardware cleanup rather than relying on
+        # cached controller command state.
         bb8.stop_all()
 
         bb8.rest_all_servos()
 
         bb8.disable_system()
+
 
         print(
             "Motors and relays disabled."
@@ -1184,7 +1362,7 @@ def main():
 
 
 # ============================================================
-# PROGRAM ENTRY POINT
+# PROGRAM ENTRY
 # ============================================================
 
 if __name__ == "__main__":
