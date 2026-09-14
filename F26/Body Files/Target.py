@@ -376,6 +376,7 @@ class LeashController:
 
         self.current_drive_command = 0.0
         self.current_swing_command = SWING_CENTER_DEG
+        self.current_steer_command = 0.0
 
 
         # ----------------------------------------------------
@@ -1267,7 +1268,8 @@ def main():
                             f"D={filtered_distance:5.1f} ft | "
                             f"A={filtered_angle:6.1f} deg | "
                             f"Drive={controller.current_drive_command:+.2f} | "
-                            f"Swing={controller.current_swing_command:5.1f}"
+                            f"Swing={controller.current_swing_command:5.1f} | "
+                            f"Pivot={controller.current_steer_command:5.1f}"
                         )
 
                         last_print_time = loop_start
