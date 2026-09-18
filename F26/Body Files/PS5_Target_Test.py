@@ -76,7 +76,7 @@ PIVOT_STOP_ANGLE_DEG = 8.0
 CLOSE_NAV_DISTANCE_FT = 14.0
 
 # Always pivot if target is mostly behind BB-8.
-REAR_PIVOT_ANGLE_DEG = 100.0
+REAR_PIVOT_ANGLE_DEG = 70
 
 SWING_CENTER_DEG = 90.0
 MAX_SWING_OFFSET_DEG = 14.0
@@ -256,6 +256,7 @@ class PathController:
         self.pivoting = False
 
         self.current_drive_command = 0.0
+        self.last_sent_drive_command = None
         self.current_swing_command = SWING_CENTER_DEG
         self.current_steer_command = 0.0
 
@@ -355,6 +356,29 @@ class PathController:
     # SMOOTH HARDWARE COMMANDS
     # --------------------------------------------------------
 
+    def send_drive_command(self, command):
+        """
+        Send a drive command only when it has actually changed.
+
+        Re-sending the same drive value every 20 ms caused the drive
+        motor control to repeatedly restart, producing the start/stop
+        stutter seen in the earlier Target.py test.
+        """
+
+        command = clamp(
+            command,
+            -MAX_DRIVE_SPEED,
+            MAX_DRIVE_SPEED
+        )
+
+        if (
+            self.last_sent_drive_command is None
+            or abs(command - self.last_sent_drive_command) > 0.001
+        ):
+            self.bb8.drive(command)
+            self.last_sent_drive_command = command
+
+
     def command_drive(self, target, dt):
 
         target = clamp(
@@ -376,7 +400,7 @@ class PathController:
             max_change
         )
 
-        self.bb8.drive(
+        self.send_drive_command(
             self.current_drive_command
         )
 
@@ -420,6 +444,7 @@ class PathController:
     def emergency_stop(self):
 
         self.bb8.drive(0.0)
+        self.last_sent_drive_command = 0.0
         self.bb8.steer(0.0)
         self.current_steer_command = 0.0
         self.bb8.set_swing(SWING_CENTER_DEG)

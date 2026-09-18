@@ -69,10 +69,6 @@ class BB8Movement:
         self.current_drive_val = 0.0
         self.drive_slew_rate = 0.005  # Adjust this: Lower = slower acceleration, Higher = punchier
         
-        # --- TURN PULSE VARIABLES (SQUARE WAVE) ---
-        self.turn_pulse_period = 0.1  # Length of one full cycle in seconds (100ms = 10Hz)
-        self.turn_duty_cycle = 0.5   # 90% ON, 10% OFF
-        
     # --- POWER MANAGEMENT ---
     def enable_system(self):
         self.relay1.on()
@@ -104,34 +100,24 @@ class BB8Movement:
 
     def steer(self, direction):
         """
-        Steer the internal pendulum drive using a Square Wave (Stick-Slip).
-        'direction' is a float from -1.0 (Full Left) to 1.0 (Full Right).
+        Control the reaction wheel with a steady motor command.
+
+        direction:
+            -1.0 = full speed one direction
+            0.0 = stop
+            +1.0 = full speed other direction
         """
-        max_turn_speed = 1.0
-        
-        # 1. If joystick is centered, stop immediately (no pulsing)
+
+        # Clamp command to valid range
+        direction = max(-1.0, min(1.0, direction))
+
+        # Small commands are treated as stopped
         if abs(direction) < 0.01:
-            self.Turn_motor.stop() # Use the proper gpiozero stop method
+            self.Turn_motor.stop()
             return
 
-        # 2. Square Wave Logic
-        current_time = time.time()
-        time_in_cycle = current_time % self.turn_pulse_period
-        
-        # 3. Check if we are in the "ON" phase of the duty cycle
-        if time_in_cycle < (self.turn_pulse_period * self.turn_duty_cycle):
-            # We are ON! 
-            # Calculate absolute speed (0.0 to 1.0)
-            speed = abs(direction) * max_turn_speed
-            
-            # Set direction based on the sign
-            if direction > 0:
-                self.Turn_motor.forward(speed)
-            else:
-                self.Turn_motor.backward(speed)
-        else:
-            # We are OFF!
-            self.Turn_motor.stop()
+        # Apply a steady command
+        self.Turn_motor.value = direction
   
         
     def set_swing(self, degrees):

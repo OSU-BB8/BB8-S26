@@ -1,0 +1,5 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "815") (type "KiCad") (uri "C:/Users/creep/Downloads/815/815.kicad_sym") (options "") (descr ""))
+	(lib (name "SC0195_9_") (type "KiCad") (uri "C:/Users/creep/Downloads/SC0195_9_/SC0195_9_.kicad_sym") (options "") (descr ""))
+)

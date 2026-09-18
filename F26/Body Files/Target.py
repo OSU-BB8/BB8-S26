@@ -90,7 +90,7 @@ MAX_VALID_DISTANCE_FT = 100.0
 #
 # You tested 0.70 successfully.
 # Reduce this during early autonomous testing if desired.
-MAX_DRIVE_SPEED = 0.70
+MAX_DRIVE_SPEED = 0.30
 
 # Minimum useful moving speed.
 MIN_DRIVE_SPEED = 0.12
@@ -179,10 +179,10 @@ SWING_COMMAND_EPSILON_DEG = 0.05
 PIVOT_KP = 0.022
 
 # Minimum useful reaction wheel command.
-MIN_PIVOT_COMMAND = 0.35
+MIN_PIVOT_COMMAND = 0.1
 
 # Maximum reaction wheel command.
-MAX_PIVOT_COMMAND = 0.85
+MAX_PIVOT_COMMAND = 1
 
 # Reverse if pivoting turns the wrong direction.
 PIVOT_DIRECTION = -1
@@ -444,7 +444,6 @@ class LeashController:
 
         command = clamp(command, -1.0, 1.0)
 
-
         if (
             force
             or self.last_steer_hardware_command is None
@@ -453,9 +452,8 @@ class LeashController:
                 - self.last_steer_hardware_command
             ) >= STEER_COMMAND_EPSILON
         ):
-
             self.bb8.steer(command)
-
+            self.current_steer_command = command
             self.last_steer_hardware_command = command
 
 
@@ -1266,7 +1264,7 @@ def main():
                         print(
                             f"{controller.state:18} | "
                             f"D={filtered_distance:5.1f} ft | "
-                            f"A={filtered_angle:6.1f} deg | "
+                            f"A={filtered_angle:4.1f} deg | "
                             f"Drive={controller.current_drive_command:+.2f} | "
                             f"Swing={controller.current_swing_command:5.1f} | "
                             f"Pivot={controller.current_steer_command:5.1f}"
