@@ -51,10 +51,10 @@ constexpr uint8_t HEAD_STS_CH = 2;  // head side-to-side
 constexpr uint32_t PI_BAUD = 115200;
 constexpr uint32_t USB_BAUD = 115200;
 
-constexpr float FOLLOW_START_DISTANCE_FT = 10.0f;
-constexpr float FOLLOW_STOP_DISTANCE_FT  = 8.5f;
-constexpr float HARD_MIN_DISTANCE_FT     = 6.0f;
-constexpr float MAX_VALID_DISTANCE_FT    = 100.0f;
+constexpr float FOLLOW_START_DISTANCE_FT = 5.0f;
+constexpr float FOLLOW_STOP_DISTANCE_FT  = 4.0f;
+constexpr float HARD_MIN_DISTANCE_FT     = 3.0f;
+constexpr float MAX_VALID_DISTANCE_FT    = 40.0f;
 
 constexpr float MAX_DRIVE_SPEED = 0.30f;
 constexpr float MIN_DRIVE_SPEED = 0.12f;
@@ -668,21 +668,21 @@ void navigationUpdate(float dt) {
 // ============================================================
 
 void sendStatus() {
-  Serial1.print("S,");
+  Serial1.print("S=");
   Serial1.print(stateName(navState));
-  Serial1.print(",");
+  Serial1.print(", Distance=");
   Serial1.print(filteredDistance, 2);
-  Serial1.print(",");
+  Serial1.print(", Angle=");
   Serial1.print(filteredAngle, 2);
-  Serial1.print(",");
-  Serial1.print(imuPitch, 2);
-  Serial1.print(",");
-  Serial1.print(imuRoll, 2);
-  Serial1.print(",");
+  Serial1.print(", Drive=");
+  //Serial1.print(imuPitch, 2);
+  //Serial1.print(", ");
+  //Serial1.print(imuRoll, 2);
+  //Serial1.print(", ");
   Serial1.print(currentDrive, 3);
-  Serial1.print(",");
+  Serial1.print(", Swing=");
   Serial1.print(currentSwing, 1);
-  Serial1.print(",");
+  Serial1.print(", Pivot=");
   Serial1.println(currentPivot, 3);
 
   Serial.print("State=");
@@ -725,7 +725,7 @@ void setup() {
   pinMode(RELAY1_PIN, OUTPUT);
 
   // SAFETY: establish safe outputs before doing anything else.
-  digitalWrite(RELAY1_PIN, LOW);
+  digitalWrite(RELAY1_PIN, HIGH);
   analogWrite(DRIVE1_PWM_PIN, 0);
   analogWrite(DRIVE2_PWM_PIN, 0);
   analogWrite(PIVOT_PWM_PIN, 0);
