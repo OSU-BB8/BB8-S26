@@ -52,6 +52,10 @@ class TeensyLink:
         self.ser.write(b"STOP\n")
         self.ser.flush()
 
+    def send_pause(self):
+        self.ser.write(b"PAUSE\n")
+        self.ser.flush()
+
     def close(self):
         try:
             self.send_stop()
@@ -102,18 +106,32 @@ def main():
     head_connected = [False]
 
     def sender_loop():
-        """Continuously resend the newest valid target to the Teensy at 20 Hz."""
+        """
+        Continuously communicate with Teensy.
+
+        Valid target:
+            Send target at 20 Hz.
+
+        Beacon unavailable:
+            Send PAUSE at 20 Hz so BB-8 remains stationary
+            while keeping the relays enabled.
+        """
+
         while sender_running[0]:
+
             with target_lock:
                 target = current_target[0]
 
-            if target is not None:
-                try:
-                    link.send_target(*target)
-                except serial.SerialException as exc:
-                    print("Teensy serial write error:", exc)
+            try:
 
-            time.sleep(SEND_PERIOD)
+                if target is not None:
+                    link.send_target(*target)
+
+                else:
+                    link.send_pause()
+
+            except serial.SerialException as exc:
+                print("Teensy serial write error:", exc)
 
     sender = threading.Thread(target=sender_loop, daemon=True)
     sender.start()
@@ -173,12 +191,12 @@ def main():
                     current_target[0] = None
 
                 try:
-                    link.send_stop()
+                    link.send_pause()
                 except serial.SerialException as exc:
-                    print("Could not send STOP to Teensy:", exc)
+                    print("Could not send PAUSE to Teensy:", exc)
 
                 head_connected[0] = False
-                print("[FAILSAFE] HEAD PI COMMUNICATION LOST -> STOP sent to Teensy")
+                print("[FAILSAFE] HEAD PI COMMUNICATION LOST -> BB-8 PAUSED")
 
     except KeyboardInterrupt:
         print("\nStopping BB-8.")

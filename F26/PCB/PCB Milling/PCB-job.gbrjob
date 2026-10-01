@@ -5,7 +5,7 @@
       "Application": "Pcbnew",
       "Version": "10.0.0"
     },
-    "CreationDate": "2026-09-24T14:49:51-05:00"
+    "CreationDate": "2026-10-01T17:28:23-05:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
@@ -70,6 +70,16 @@
       "Path": "PCB-B_Mask.gbr",
       "FileFunction": "SolderMask,Bot",
       "FilePolarity": "Negative"
+    },
+    {
+      "Path": "PCB-User_Eco1.gbr",
+      "FileFunction": "Other,User",
+      "FilePolarity": "Positive"
+    },
+    {
+      "Path": "PCB-User_Eco2.gbr",
+      "FileFunction": "Other,User",
+      "FilePolarity": "Positive"
     },
     {
       "Path": "PCB-Edge_Cuts.gbr",

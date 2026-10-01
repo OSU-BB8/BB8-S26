@@ -33,14 +33,14 @@ ANGLE_DIVISOR = 3.0
 # ============================================================
 
 # Number of recent measurements used for averaging
-WINDOW_SIZE = 15
+WINDOW_SIZE = 100
 
 # Reject measurements too far from the current group
-MAX_DISTANCE_ERROR_FT = 2.0
-MAX_ANGLE_ERROR_DEG = 30.0
+MAX_DISTANCE_ERROR_FT = 4.0
+MAX_ANGLE_ERROR_DEG = 15.0
 
-# Need this many good samples before sending a target
-MIN_GOOD_SAMPLES = 5
+# Need this many good samples before accepting a new target
+MIN_GOOD_SAMPLES = 20
 
 
 # ============================================================
@@ -49,7 +49,7 @@ MIN_GOOD_SAMPLES = 5
 
 # If no valid UWB packet is received for this long,
 # consider the beacon lost.
-BEACON_TIMEOUT = 0.5
+BEACON_TIMEOUT = 3.0
 
 
 # ============================================================
@@ -59,6 +59,21 @@ BEACON_TIMEOUT = 0.5
 # Send averaged position to Body Pi at 5 Hz
 SEND_RATE_HZ = 5
 SEND_PERIOD = 1.0 / SEND_RATE_HZ
+
+
+# ============================================================
+# HOLD-LAST-TARGET SETTINGS
+# ============================================================
+
+# If fresh good data is temporarily unavailable, continue
+# sending the previous good target for this many send cycles.
+#
+# At 5 Hz:
+#   20 cycles = 4 seconds
+#
+# After this expires, UDP transmission stops and the Body Pi
+# will eventually put BB-8 into PAUSE.
+HOLD_LAST_TARGET_CYCLES = 20
 
 
 # ============================================================
@@ -73,10 +88,21 @@ angle_samples = deque(maxlen=WINDOW_SIZE)
 # BEACON STATE
 # ============================================================
 
+# Time that the most recent valid UWB TWR packet arrived
 last_beacon_time = None
 
-# Start in lost state until the first valid UWB packet arrives
+# Start lost until first valid beacon packet arrives
 beacon_lost = True
+
+# Most recent successfully filtered target
+#
+# Format:
+# (distance_ft, angle_deg)
+last_good_target = None
+
+# Number of consecutive send cycles for which we've had
+# to reuse last_good_target
+hold_cycles = 0
 
 
 # ============================================================
@@ -85,7 +111,7 @@ beacon_lost = True
 
 def angle_difference(a, b):
     """
-    Return the smallest difference between two angles.
+    Return the smallest signed difference between two angles.
 
     Example:
         179 and -179 are only 2 degrees apart.
@@ -125,9 +151,28 @@ def circular_average(angles):
 # ============================================================
 
 def get_filtered_target():
+    """
+    Filter the current rolling sample windows.
 
-    # Wait until enough samples exist
+    Returns:
+        (
+            average_distance,
+            average_angle,
+            number_of_good_distance_samples,
+            number_of_good_angle_samples
+        )
+
+    Returns None if there are not enough good samples.
+    """
+
+    # --------------------------------------------------------
+    # WAIT FOR ENOUGH RAW SAMPLES
+    # --------------------------------------------------------
+
     if len(distance_samples) < MIN_GOOD_SAMPLES:
+        return None
+
+    if len(angle_samples) < MIN_GOOD_SAMPLES:
         return None
 
 
@@ -155,6 +200,9 @@ def get_filtered_target():
     angle_center = circular_average(
         angle_samples
     )
+
+    if angle_center is None:
+        return None
 
     good_angles = [
         angle
@@ -207,12 +255,10 @@ def get_filtered_target():
 print("Opening UWB receiver...")
 
 
-# IMPORTANT:
+# Keep serial timeout short.
 #
-# Keep this timeout short.
-#
-# readline() must return frequently enough for the program
-# to check whether the beacon has stopped sending data.
+# This allows readline() to return frequently so the program
+# can detect when UWB packets completely stop arriving.
 
 beacon = serial.Serial(
     BEACON_PORT,
@@ -227,37 +273,51 @@ sock = socket.socket(
 )
 
 
+# ============================================================
+# STARTUP INFORMATION
+# ============================================================
+
 print()
 print("======================================")
 print(" BB-8 FILTERED UWB BEACON SENDER")
 print("======================================")
 print()
 
-print(f"Beacon port:     {BEACON_PORT}")
-print(f"Body Pi:         {BODY_PI_IP}:{UDP_PORT}")
+print(f"Beacon port:        {BEACON_PORT}")
+print(f"Body Pi:            {BODY_PI_IP}:{UDP_PORT}")
 print()
 
-print(f"Filter window:   {WINDOW_SIZE} samples")
-print(f"Minimum samples: {MIN_GOOD_SAMPLES}")
+print(f"Filter window:      {WINDOW_SIZE} samples")
+print(f"Minimum samples:    {MIN_GOOD_SAMPLES}")
 
 print(
-    f"Distance filter: +/- "
+    f"Distance filter:    +/- "
     f"{MAX_DISTANCE_ERROR_FT} ft"
 )
 
 print(
-    f"Angle filter:    +/- "
+    f"Angle filter:       +/- "
     f"{MAX_ANGLE_ERROR_DEG} deg"
 )
 
 print(
-    f"Beacon timeout:  "
+    f"Beacon timeout:     "
     f"{BEACON_TIMEOUT} sec"
 )
 
 print(
-    f"Send rate:       "
+    f"Send rate:          "
     f"{SEND_RATE_HZ} Hz"
+)
+
+print(
+    f"Hold target cycles: "
+    f"{HOLD_LAST_TARGET_CYCLES}"
+)
+
+print(
+    f"Hold target time:   "
+    f"{HOLD_LAST_TARGET_CYCLES / SEND_RATE_HZ:.1f} sec"
 )
 
 print()
@@ -276,9 +336,9 @@ try:
 
     while True:
 
-        # ----------------------------------------------------
-        # READ UWB
-        # ----------------------------------------------------
+        # ====================================================
+        # READ UWB SERIAL
+        # ====================================================
 
         raw = beacon.readline()
 
@@ -355,20 +415,29 @@ try:
 
                             print()
                             print(
-                                ">>> BEACON SIGNAL "
-                                "RESTORED <<<"
+                                ">>> BEACON SIGNAL RESTORED <<<"
                             )
 
                             print(
-                                "Collecting fresh "
-                                "measurements..."
+                                "Collecting fresh measurements..."
                             )
                             print()
 
 
-                            # Throw away old measurements
+                            # Throw away measurements from
+                            # before the signal was lost.
                             distance_samples.clear()
                             angle_samples.clear()
+
+
+                            # IMPORTANT:
+                            #
+                            # Do NOT clear last_good_target.
+                            #
+                            # While the new filter fills up,
+                            # we can continue using the previous
+                            # known-good target if there are
+                            # hold cycles remaining.
 
 
                         beacon_lost = False
@@ -386,7 +455,7 @@ try:
 
 
                         # UWB P reading is approximately
-                        # 3x the real angle.
+                        # 3x the actual angle.
                         angle_deg = (
                             raw_angle
                             / ANGLE_DIVISOR
@@ -442,8 +511,9 @@ try:
                 > BEACON_TIMEOUT
             ):
 
-                # Only print this once when the
-                # transition to lost occurs.
+                # --------------------------------------------
+                # BEACON JUST BECAME LOST
+                # --------------------------------------------
 
                 if not beacon_lost:
 
@@ -458,17 +528,16 @@ try:
                     )
 
                     print(
-                        "Stopping transmission "
-                        "to Body Pi."
+                        "Holding previous good target "
+                        "temporarily..."
                     )
                     print()
 
 
-                    # Remove all old measurements.
+                    # Remove old filter data.
                     #
-                    # This prevents BB-8 from acting
-                    # on old beacon information when
-                    # the beacon reconnects.
+                    # last_good_target is intentionally
+                    # NOT cleared.
 
                     distance_samples.clear()
                     angle_samples.clear()
@@ -489,10 +558,13 @@ try:
             >= SEND_PERIOD
         ):
 
+            target_to_send = None
+            using_held_target = False
 
-            # ------------------------------------------------
-            # ONLY SEND WHILE BEACON IS CONNECTED
-            # ------------------------------------------------
+
+            # =================================================
+            # TRY TO GET A NEW GOOD TARGET
+            # =================================================
 
             if not beacon_lost:
 
@@ -509,52 +581,125 @@ try:
                     ) = result
 
 
-                    # ----------------------------------------
-                    # BUILD MESSAGE
-                    # ----------------------------------------
+                    # -----------------------------------------
+                    # SAVE NEW KNOWN-GOOD TARGET
+                    # -----------------------------------------
 
-                    message = (
-                        f"{distance_ft:.3f},"
-                        f"{angle_deg:.2f}"
+                    last_good_target = (
+                        distance_ft,
+                        angle_deg
                     )
 
 
-                    # ----------------------------------------
-                    # SEND UDP
-                    # ----------------------------------------
+                    # New good data resets the hold counter.
+                    hold_cycles = 0
 
-                    sock.sendto(
-                        message.encode("ascii"),
-                        (
-                            BODY_PI_IP,
-                            UDP_PORT
-                        )
+
+                    target_to_send = (
+                        distance_ft,
+                        angle_deg
                     )
 
-
-                    # ----------------------------------------
-                    # TERMINAL DEBUG
-                    # ----------------------------------------
 
                     print(
-                        f"SEND -> "
+                        f"GOOD -> "
                         f"D={distance_ft:5.2f} ft | "
                         f"A={angle_deg:6.1f} deg | "
-                        f"Samples: "
-                        f"D {good_distance_count:2d}/"
-                        f"{len(distance_samples):2d} "
-                        f"A {good_angle_count:2d}/"
-                        f"{len(angle_samples):2d}"
+                        f"Confidence: "
+                        f"D {(100 * good_distance_count / len(distance_samples)):3.1f}% | "
+                        f"A {(100 * good_angle_count / len(distance_samples)):3.1f}%"
                     )
 
+
+            # =================================================
+            # NO NEW GOOD TARGET
+            # =================================================
+
+            if target_to_send is None:
+
+
+                # ---------------------------------------------
+                # HOLD LAST KNOWN-GOOD TARGET
+                # ---------------------------------------------
+
+                if (
+                    last_good_target is not None
+                    and
+                    hold_cycles < HOLD_LAST_TARGET_CYCLES
+                ):
+
+                    target_to_send = last_good_target
+
+                    hold_cycles += 1
+
+                    using_held_target = True
+
+
+                    distance_ft, angle_deg = (
+                        last_good_target
+                    )
+
+
+                    print(
+                        f"HOLD "
+                        f"{hold_cycles:02d}/"
+                        f"{HOLD_LAST_TARGET_CYCLES} -> "
+                        f"D={distance_ft:5.2f} ft | "
+                        f"A={angle_deg:6.1f} deg"
+                    )
+
+
+                # ---------------------------------------------
+                # HOLD PERIOD EXPIRED
+                # ---------------------------------------------
 
                 else:
 
-                    print(
-                        "FILTER -> "
-                        "Collecting samples..."
-                    )
+                    if last_good_target is None:
 
+                        print(
+                            "WAIT -> "
+                            "No good target available yet"
+                        )
+
+                    else:
+
+                        print(
+                            f"PAUSE -> "
+                            f"No good beacon target for "
+                            f"{HOLD_LAST_TARGET_CYCLES} cycles"
+                        )
+
+
+            # =================================================
+            # SEND TARGET
+            # =================================================
+
+            if target_to_send is not None:
+
+                distance_ft, angle_deg = (
+                    target_to_send
+                )
+
+
+                message = (
+                    f"{distance_ft:.3f},"
+                    f"{angle_deg:.2f}"
+                )
+
+
+                sock.sendto(
+                    message.encode("ascii"),
+                    (
+                        BODY_PI_IP,
+                        UDP_PORT
+                    )
+                )
+
+
+            # =================================================
+            # UPDATE SEND TIMER
+            # =================================================
 
             last_send_time = now
 

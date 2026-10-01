@@ -63,15 +63,15 @@ constexpr float DRIVE_ACCEL_RATE = 0.40f;
 constexpr float DRIVE_DECEL_RATE = 0.70f;
 
 constexpr float ANGLE_DEADBAND_DEG = 6.0f;
-constexpr float CLOSE_PIVOT_START_ANGLE_DEG = 22.0f;
-constexpr float PIVOT_STOP_ANGLE_DEG = 8.0f;
+constexpr float CLOSE_PIVOT_START_ANGLE_DEG = 30.0f;
+constexpr float PIVOT_STOP_ANGLE_DEG = 10.0f;
 constexpr float REAR_PIVOT_ANGLE_DEG = 65.0f;
-constexpr float CLOSE_NAV_DISTANCE_FT = 14.0f;
+constexpr float CLOSE_NAV_DISTANCE_FT = 10.0f;
 
 constexpr float SWING_CENTER_DEG = 90.0f;
 constexpr float MAX_SWING_OFFSET_DEG = 14.0f;
 constexpr float SWING_KP = 0.35f;
-constexpr float SWING_DIRECTION = -1.0f;
+constexpr float SWING_DIRECTION = 1.0f;
 constexpr float MIN_SWING_OFFSET_DEG = 1.5f;
 constexpr float SWING_SLEW_RATE_DEG_PER_SEC = 35.0f;
 
@@ -446,6 +446,26 @@ void handleCommand(char *line) {
     if (!systemEnabled) enableSystem();
 
     return;
+  }
+
+  // Pause movement but KEEP motor power / relays enabled.
+  if (strcmp(line, "PAUSE") == 0) {
+      emergencyStop(WAITING_FOR_PI);
+
+      // Throw away the old target so BB-8 cannot resume
+      // toward stale beacon data.
+      resetTargetFilter();
+
+      // Keep the system enabled.
+      // DO NOT call disableSystem().
+      if (!systemEnabled) {
+          enableSystem();
+      }
+
+      // PAUSE counts as valid Pi communication.
+      lastPacketMs = millis();
+
+      return;
   }
 
   // Explicit stop from Pi.
