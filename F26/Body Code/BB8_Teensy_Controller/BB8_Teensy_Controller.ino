@@ -22,7 +22,7 @@
 #include <Adafruit_BNO08x.h>
 
 // ============================================================
-// PIN ASSIGNMENTS
+// PIN ASSIGNMENTS - CHANGE TO MATCH NEW WIRING
 // ============================================================
 
 // Pi UART: Teensy Serial1 RX=0, TX=1
@@ -87,10 +87,6 @@ constexpr uint32_t PI_TIMEOUT_MS = 500;
 constexpr uint32_t CONTROL_PERIOD_US = 20000; // 50 Hz
 constexpr uint32_t STATUS_PERIOD_MS = 250;
 
-// Time allowed for the physical relay contacts to close before any motor
-// command is applied. The first received target is retained during this wait.
-constexpr uint32_t RELAY_STARTUP_DELAY_MS = 500;
-
 // Servo calibration.
 // Tune these to your actual servos if necessary.
 constexpr uint16_t SERVO_MIN_US = 500;
@@ -104,13 +100,6 @@ constexpr float HEAD_MAX_DEG = 125.0f;
 constexpr float HEAD_FB_OFFSET_DEG = 2.5f;
 constexpr float HEAD_STS_OFFSET_DEG = -2.0f;
 constexpr float HEAD_EMA_ALPHA = 0.15f;
-
-// Startup safety: do not immediately command the head to the IMU angle.
-// Wait briefly, then ramp the commanded head angles toward level at a
-// bounded speed. This prevents a sudden snap when the Teensy powers up.
-constexpr uint32_t HEAD_STARTUP_HOLD_MS = 1000;
-constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 12.0f;
-
 constexpr float HEAD_PITCH_DIRECTION = 1.0f;
 constexpr float HEAD_ROLL_DIRECTION  = 1.0f;
 
@@ -131,8 +120,6 @@ float imuYaw = 0.0f;
 float headFBCommand = HEAD_CENTER_DEG;
 float headSTSCommand = HEAD_CENTER_DEG;
 bool headFilterInitialized = false;
-uint32_t headStartupMs = 0;
-uint32_t lastHeadUpdateMs = 0;
 
 // ============================================================
 // CONTROLLER STATE
@@ -140,7 +127,6 @@ uint32_t lastHeadUpdateMs = 0;
 
 enum NavState {
   STARTUP,
-  RELAY_WAIT,
   WAITING_FOR_PI,
   IN_LEASH_ZONE,
   TARGET_REACHED,
@@ -157,7 +143,6 @@ NavState navState = STARTUP;
 bool following = false;
 bool pivoting = false;
 bool systemEnabled = false;
-uint32_t relayEnableMs = 0;
 
 bool haveFilteredTarget = false;
 float filteredDistance = 0.0f;
@@ -199,7 +184,6 @@ float normalizeAngle(float a) {
 const char* stateName(NavState s) {
   switch (s) {
     case STARTUP: return "STARTUP";
-    case RELAY_WAIT: return "RELAY_WAIT";
     case WAITING_FOR_PI: return "WAIT_PI";
     case IN_LEASH_ZONE: return "LEASH";
     case TARGET_REACHED: return "REACHED";
@@ -278,31 +262,8 @@ void centerHead() {
   setHeadSideToSide(HEAD_CENTER_DEG);
 }
 
-float slewToward(float current, float target, float maxStep) {
-  float error = target - current;
-  if (error > maxStep) return current + maxStep;
-  if (error < -maxStep) return current - maxStep;
-  return target;
-}
-
 void updateHeadLeveling() {
   if (!imuOK) return;
-
-  uint32_t now = millis();
-
-  // Give the person powering up BB-8 time to move their hands away.
-  // During this hold the head remains at the startup command.
-  if ((uint32_t)(now - headStartupMs) < HEAD_STARTUP_HOLD_MS) {
-    lastHeadUpdateMs = now;
-    return;
-  }
-
-  float dt = 0.02f;
-  if (lastHeadUpdateMs != 0) {
-    dt = (now - lastHeadUpdateMs) / 1000.0f;
-    dt = clampf(dt, 0.001f, 0.10f);
-  }
-  lastHeadUpdateMs = now;
 
   // Match the original Raspberry Pi behavior:
   // forward/back follows pitch; side-to-side follows roll.
@@ -312,15 +273,14 @@ void updateHeadLeveling() {
   targetFB = clampf(targetFB, HEAD_MIN_DEG, HEAD_MAX_DEG);
   targetSTS = clampf(targetSTS, HEAD_MIN_DEG, HEAD_MAX_DEG);
 
-  // Keep the normal EMA filtering, but never allow the physical command
-  // to move faster than the configured startup-safe slew rate.
-  float filteredFB = headFBCommand + HEAD_EMA_ALPHA * (targetFB - headFBCommand);
-  float filteredSTS = headSTSCommand + HEAD_EMA_ALPHA * (targetSTS - headSTSCommand);
-
-  float maxStep = HEAD_STARTUP_SLEW_DEG_PER_SEC * dt;
-  headFBCommand = slewToward(headFBCommand, filteredFB, maxStep);
-  headSTSCommand = slewToward(headSTSCommand, filteredSTS, maxStep);
-  headFilterInitialized = true;
+  if (!headFilterInitialized) {
+    headFBCommand = targetFB;
+    headSTSCommand = targetSTS;
+    headFilterInitialized = true;
+  } else {
+    headFBCommand += HEAD_EMA_ALPHA * (targetFB - headFBCommand);
+    headSTSCommand += HEAD_EMA_ALPHA * (targetSTS - headSTSCommand);
+  }
 
   setHeadForwardBack(headFBCommand);
   setHeadSideToSide(headSTSCommand);
@@ -341,21 +301,14 @@ void setSwing(float degrees) {
 }
 
 void enableSystem() {
-  if (systemEnabled) return;
-
-  // Force every motor command to zero BEFORE energizing the relay.
-  currentDrive = 0.0f;
-  currentPivot = 0.0f;
+  // Outputs are already zero before relays close.
   drive(0.0f);
   steer(0.0f);
-  setSwing(SWING_CENTER_DEG);
+  setSwing(90.0f);
+  delay(20);
 
-  // Energize motor power, then let the normal control loop wait for the
-  // physical relay contacts to close. Do NOT discard the current target.
   digitalWrite(RELAY1_PIN, HIGH);
   systemEnabled = true;
-  relayEnableMs = millis();
-  navState = RELAY_WAIT;
 }
 
 void disableSystem() {
@@ -365,7 +318,6 @@ void disableSystem() {
 
   digitalWrite(RELAY1_PIN, LOW);
   systemEnabled = false;
-  relayEnableMs = 0;
 }
 
 void emergencyStop(NavState reason) {
@@ -793,8 +745,7 @@ void setup() {
   pinMode(RELAY1_PIN, OUTPUT);
 
   // SAFETY: establish safe outputs before doing anything else.
-  // Relay is active HIGH, so LOW keeps motor power disconnected at startup.
-  digitalWrite(RELAY1_PIN, LOW);
+  digitalWrite(RELAY1_PIN, HIGH);
   analogWrite(DRIVE1_PWM_PIN, 0);
   analogWrite(DRIVE2_PWM_PIN, 0);
   analogWrite(PIVOT_PWM_PIN, 0);
@@ -805,10 +756,6 @@ void setup() {
   pca.setPWMFreq(50);
   setSwing(SWING_CENTER_DEG);
   centerHead();
-
-  // Start the head startup safety timer after its initial center command.
-  headStartupMs = millis();
-  lastHeadUpdateMs = headStartupMs;
 
   // BNO085 on default I2C address.
   imuOK = bno08x.begin_I2C();
@@ -858,20 +805,7 @@ void loop() {
     lastControlUs = nowUs;
 
     if (systemEnabled) {
-      // When a command wakes the system from COMMS_LOST/STOP, the target has
-      // already been stored by handleCommand(). Hold all motor outputs at zero
-      // until the physical relay has had time to close. Then immediately act
-      // on that SAME stored target; no second Pi packet is required.
-      if ((uint32_t)(nowMs - relayEnableMs) < RELAY_STARTUP_DELAY_MS) {
-        currentDrive = 0.0f;
-        currentPivot = 0.0f;
-        drive(0.0f);
-        steer(0.0f);
-        setSwing(SWING_CENTER_DEG);
-        navState = RELAY_WAIT;
-      } else {
-        navigationUpdate(dt);
-      }
+      navigationUpdate(dt);
     }
 
     // Keep the head level from the latest BNO085 pitch/roll reading.

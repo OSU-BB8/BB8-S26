@@ -21,11 +21,6 @@ BEACON_BAUD = 115200
 BODY_PI_IP = "10.42.0.27"
 UDP_PORT = 5005
 
-# Laptop visualization
-# Set this to the Windows PC IPv4 address on the BB-8 Wi-Fi network.
-DISPLAY_IP = "10.42.0.185"
-DISPLAY_PORT = 5006
-
 # Unit conversion
 CM_TO_FT = 0.0328084
 
@@ -38,7 +33,7 @@ ANGLE_DIVISOR = 3.0
 # ============================================================
 
 # Number of recent measurements used for averaging
-WINDOW_SIZE = 50
+WINDOW_SIZE = 100
 
 # Reject measurements too far from the current group
 MAX_DISTANCE_ERROR_FT = 4.0
@@ -108,9 +103,6 @@ last_good_target = None
 # Number of consecutive send cycles for which we've had
 # to reuse last_good_target
 hold_cycles = 0
-
-# Confidence/sample information associated with last_good_target.
-last_good_stats = None
 
 
 # ============================================================
@@ -598,22 +590,6 @@ try:
                         angle_deg
                     )
 
-                    distance_confidence = (
-                        100.0 * good_distance_count / len(distance_samples)
-                    )
-                    angle_confidence = (
-                        100.0 * good_angle_count / len(angle_samples)
-                    )
-
-                    last_good_stats = (
-                        distance_confidence,
-                        angle_confidence,
-                        good_distance_count,
-                        good_angle_count,
-                        len(distance_samples),
-                        len(angle_samples)
-                    )
-
 
                     # New good data resets the hold counter.
                     hold_cycles = 0
@@ -630,8 +606,8 @@ try:
                         f"D={distance_ft:5.2f} ft | "
                         f"A={angle_deg:6.1f} deg | "
                         f"Confidence: "
-                        f"D {distance_confidence:3.1f}% | "
-                        f"A {angle_confidence:3.1f}%"
+                        f"D {(100 * good_distance_count / len(distance_samples)):3.1f}% | "
+                        f"A {(100 * good_angle_count / len(distance_samples)):3.1f}%"
                     )
 
 
@@ -719,52 +695,6 @@ try:
                         UDP_PORT
                     )
                 )
-
-                # -----------------------------------------------
-                # SEND RICH TELEMETRY TO LAPTOP DISPLAY
-                # Body Pi still receives ONLY distance,angle.
-                # -----------------------------------------------
-                if last_good_stats is not None:
-                    (
-                        distance_confidence,
-                        angle_confidence,
-                        good_distance_count,
-                        good_angle_count,
-                        raw_distance_count,
-                        raw_angle_count
-                    ) = last_good_stats
-
-                    state = (
-                        "HOLD"
-                        if using_held_target
-                        else "GOOD"
-                    )
-
-                    display_message = (
-                        f"{distance_ft:.3f},"
-                        f"{angle_deg:.2f},"
-                        f"{distance_confidence:.1f},"
-                        f"{angle_confidence:.1f},"
-                        f"{good_distance_count},"
-                        f"{good_angle_count},"
-                        f"{raw_distance_count},"
-                        f"{raw_angle_count},"
-                        f"{state}"
-                    )
-
-                    try:
-                        sock.sendto(
-                            display_message.encode("ascii"),
-                            (
-                                DISPLAY_IP,
-                                DISPLAY_PORT
-                            )
-                        )
-                    except OSError as exc:
-                        # Visualization must never interrupt BB-8 control.
-                        print(
-                            f"DISPLAY SEND ERROR -> {exc}"
-                        )
 
 
             # =================================================
