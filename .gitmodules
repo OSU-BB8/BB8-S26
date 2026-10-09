@@ -1,0 +1,3 @@
+[submodule "S26/BB8 Files/apriltag/picar_ros_bb8"]
+	path = S26/BB8 Files/apriltag/picar_ros_bb8
+	url = https://github.com/aubreyrfudge/picar_ros_bb8.git
