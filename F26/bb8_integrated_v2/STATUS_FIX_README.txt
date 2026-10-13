@@ -1,0 +1,1 @@
+Replace bb8_body.py on Body Pi and bb8_remote_debug.py on the computer running the remote. Keep config.json unchanged. Restart the body service: sudo systemctl restart bb8-body.service. Run python3 bb8_remote_debug.py, then status. Both sides must be updated. The relay_enabled value is the software GPIO command, not physical contact feedback.

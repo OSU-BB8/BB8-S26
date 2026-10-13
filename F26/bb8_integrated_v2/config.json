@@ -1,0 +1,14 @@
+{
+  "token": "CHANGE_ME_TO_LONG_RANDOM_SECRET",
+  "body_host": "10.42.0.27",
+  "head_host": "10.42.0.1",
+  "body_port": 5100,
+  "head_port": 5101,
+  "debug_console": true,
+  "allow_shutdown": true,
+  "relay_active_high": true,
+  "remote_timeout_seconds": 2.0,
+  "remote_required": false,
+  "head_timeout_seconds": 3.0,
+  "apriltag_python": "/usr/bin/python3"
+}

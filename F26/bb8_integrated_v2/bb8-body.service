@@ -1,0 +1,13 @@
+[Unit]
+Description=BB-8 Body Mode Supervisor
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=simple
+User=bb8
+WorkingDirectory=/home/bb8/bb8-control
+ExecStart=/usr/bin/python3 /home/bb8/bb8-control/bb8_body.py
+Restart=on-failure
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
