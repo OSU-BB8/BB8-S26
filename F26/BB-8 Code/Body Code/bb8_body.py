@@ -72,7 +72,9 @@ def start(selected):
     global state,mode,proc
     with lock:
         if state=='ESTOP': return
-        if selected not in ('PS5','BEACON','APRILTAG'): return
+        if selected not in ('PS5','BEACON','APRILTAG','DEMO'): return
+        # A retransmitted START for the current healthy mode must not restart it.
+        if state=='RUNNING' and mode==selected and proc is not None and proc.poll() is None: return
         if state!='IDLE': stop()
         if C['relay_active_high'] is None:
             print('[BLOCKED] Set relay_active_high after verifying hardware',flush=True);return
@@ -85,7 +87,10 @@ def start(selected):
                 time.sleep(.05)
             if time.monotonic()-last_head>1.5:
                 print('[BLOCKED] Head heartbeat missing',flush=True);stop();return
-        script='PS5_Controller.py' if selected=='PS5' else 'Beacon_Target_Control.py'
+        script={'PS5':'PS5_Controller.py', 'BEACON':'Beacon_Target_Control.py',
+                'APRILTAG':'Beacon_Target_Control.py', 'DEMO':'Movement_Demo.py'}[selected]
+        if not (ROOT/script).is_file():
+            print('[BLOCKED] Missing mode script:', ROOT/script,flush=True);stop();return
         env=os.environ.copy();env['BB8_RELAY_ACTIVE_HIGH']='1' if C['relay_active_high'] else '0'
         proc=subprocess.Popen([sys.executable,'-u',str(ROOT/script)],cwd=ROOT,env=env,start_new_session=True)
         mode=selected;state='RUNNING';print('[BODY] RUNNING',mode,flush=True)
@@ -167,7 +172,7 @@ def console():
     while running:
         try: cmd=input('bb8> ').strip().upper()
         except EOFError:return
-        if cmd in ('PS5','BEACON','APRILTAG'):handle({'token':C['token'],'command':'START','mode':cmd})
+        if cmd in ('PS5','BEACON','APRILTAG','DEMO'):handle({'token':C['token'],'command':'START','mode':cmd})
         elif cmd in ('STOP','ESTOP','STATUS'):handle({'token':C['token'],'command':cmd})
 def main():
     global running
