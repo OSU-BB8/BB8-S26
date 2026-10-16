@@ -23,10 +23,10 @@ from pupil_apriltags import Detector
 HERE = Path(__file__).resolve().parent
 AUDIO_DIR = HERE / "audio"
 
-# Change these IDs and filenames to match your tags/audio.
+#audio files
 TAG_AUDIO = {
-    0: AUDIO_DIR / "tag0.mp3",
-    1: AUDIO_DIR / "tag1.mp3",
+    0: AUDIO_DIR / "audio0.mp3",
+    1: AUDIO_DIR / "audio1.mp3",
 }
 
 TAG_FAMILY = "tag36h11"
