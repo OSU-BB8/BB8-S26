@@ -3,7 +3,6 @@ import numpy as np
 import math
 import time
 import os
-import socket
 from pathlib import Path
 
 from picamera2 import Picamera2
@@ -39,14 +38,7 @@ DETECTION_THREADS = 4
 
 METERS_TO_FEET = 3.28084
 
-# Only tag 1 controls movement. Other IDs remain visible in logs.
-FOLLOW_TAG_ID = 1
-BODY_PI_IP = os.environ.get("BB8_BODY_IP", "10.42.0.27")
-BODY_TARGET_PORT = 5005
-SEND_PERIOD = 0.1  # 10 Hz, faster than Body Pi 0.5s target timeout
-MAX_DISTANCE_FT = 50.0
-MAX_ABS_ANGLE_DEG = 90.0
-# No stale target holding: no ID 1 detection -> no UDP packets.
+# This version only responds to AprilTag ID 0.
 
 # ==========================================
 # AUDIO CONFIGURATION
@@ -172,7 +164,7 @@ detector = Detector(
 print("Camera started.")
 print("AprilTag detection running...")
 print("Tag 0 plays audio/audio0.mp3 when it first appears.")
-print("Only Tag 1 controls movement.")
+print("Only AprilTag 0 is used; other tag IDs are ignored.")
 print("Press Q to quit when video is enabled.")
 print("------------------------------------")
 
@@ -195,13 +187,14 @@ try:
             cv2.COLOR_BGR2GRAY
         )
 
-        # Detect all visible AprilTags
-        tags = detector.detect(
+        # Detect tags, then keep only AprilTag ID 0.
+        detected_tags = detector.detect(
             gray,
             estimate_tag_pose=True,
             camera_params=camera_params,
             tag_size=TAG_SIZE_METERS
         )
+        tags = [tag for tag in detected_tags if int(tag.tag_id) == 0]
 
         results = []
         current_tag_ids = set()
@@ -303,27 +296,6 @@ try:
         previous_tag_ids = current_tag_ids.copy()
 
         # ======================================
-        # SEND ONLY TAG 1 TO BODY PI
-        # ======================================
-        # Body Pi already understands distance_ft,angle_deg on UDP 5005.
-        # If tag 1 disappears, stop sending: Body Pi times out in 0.5 s.
-        # Other IDs are deliberately ignored for motion.
-        now = time.monotonic()
-        follow = next((r for r in results if r["id"] == FOLLOW_TAG_ID), None)
-        if follow is not None and now - last_send >= SEND_PERIOD:
-            distance = follow["distance_ft"]
-            angle = follow["angle_deg"]
-            if (math.isfinite(distance) and math.isfinite(angle)
-                    and 0.0 <= distance <= MAX_DISTANCE_FT
-                    and abs(angle) <= MAX_ABS_ANGLE_DEG):
-                packet = f"{distance:.3f},{angle:.2f}"
-                try:
-                    target_sock.sendto(packet.encode("ascii"), (BODY_PI_IP, BODY_TARGET_PORT))
-                except OSError as exc:
-                    print(f"[APRILTAG] UDP send failed: {exc}", flush=True)
-                last_send = now
-
-        # ======================================
         # TERMINAL OUTPUT
         # ======================================
 
@@ -334,7 +306,7 @@ try:
             if results:
 
                 print(
-                    f"\\nDetected {len(results)} tag(s)"
+                    f"\nDetected {len(results)} tag(s)"
                 )
 
                 for result in results:
@@ -379,10 +351,9 @@ try:
                 break
 
 except KeyboardInterrupt:
-    print("\\nStopping detector...")
+    print("\nStopping detector...")
 
 finally:
-    target_sock.close()
     picam2.stop()
     cv2.destroyAllWindows()
     if audio_ready:
