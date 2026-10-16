@@ -26,7 +26,7 @@ AUDIO_DIR = HERE / "audio"
 #audio files
 TAG_AUDIO = {
     0: AUDIO_DIR / "audio0.mp3",
-    1: AUDIO_DIR / "audio1.mp3",
+    
 }
 
 TAG_FAMILY = "tag36h11"
