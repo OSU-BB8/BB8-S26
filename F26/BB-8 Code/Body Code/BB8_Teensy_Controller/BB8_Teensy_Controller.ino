@@ -72,10 +72,10 @@ constexpr float DRIVE_DECEL_RATE = 0.70f;
 // with the robot securely supported and drive wheels clear of the ground.
 // SAFETY: Leave false until drive wheels are raised and feedback direction verified.
 // After successful testing, change to true to activate idle and moving damping.
-constexpr bool ENABLE_DRIVE_STABILIZATION = true;
-constexpr float BALANCE_DIRECTION = 1.0f; // Reverse to -1 if feedback reinforces rocking
+constexpr bool ENABLE_DRIVE_STABILIZATION = false;
+constexpr float BALANCE_DIRECTION = -1.0f; // Reverse to -1 if feedback reinforces rocking
 constexpr float BALANCE_PITCH_ZERO_DEG = 0.0f; // Calibrate at physical rest
-constexpr float BALANCE_KP = 0.008f; // PWM fraction / degree
+constexpr float BALANCE_KP = 0.2f; // PWM fraction / degree
 constexpr float BALANCE_KD = 0.0015f; // PWM fraction / (degree/second)
 constexpr float BALANCE_MAX_STILL = 0.10f;
 constexpr float BALANCE_MAX_MOVING = 0.06f;
@@ -116,9 +116,9 @@ constexpr float MAX_ARC_BODY_LEAN_DEG = 5.0f;
 constexpr float ARC_LEAN_DIRECTION = 1.0f; // Verify inside-of-turn direction
 constexpr float BODY_TILT_TARGET_SLEW_DEG_PER_SEC = 90.0f;
 // PD output is a servo-angle offset, NOT a motor PWM command.
-constexpr float PENDULUM_KP = 0.20f; // servo deg / body tilt deg
+constexpr float PENDULUM_KP = 0.10f; // servo deg / body tilt deg
 constexpr float PENDULUM_KD = 0.20f; // servo deg / (body tilt deg/s)
-constexpr float PENDULUM_KI = 0.05f; // servo deg / (body tilt deg * second)
+constexpr float PENDULUM_KI = 0.14f; // servo deg / (body tilt deg * second)
 constexpr float PENDULUM_INTEGRAL_LIMIT = 100.0f; // deg * seconds
 constexpr float PENDULUM_INTEGRAL_RESET_TARGET_CHANGE_DEG = 1.0f;
 constexpr float PENDULUM_CORRECTION_DIRECTION = -1.0f; // verify physical sign
@@ -154,15 +154,15 @@ constexpr uint16_t SERVO_MAX_US = 2500;
 constexpr float HEAD_CENTER_DEG = 90.0f;
 constexpr float HEAD_MIN_DEG = 65.0f;
 constexpr float HEAD_MAX_DEG = 125.0f;
-constexpr float HEAD_FB_OFFSET_DEG = 2.5f;
-constexpr float HEAD_STS_OFFSET_DEG = -2.0f;
+constexpr float HEAD_FB_OFFSET_DEG = 8.0f;
+constexpr float HEAD_STS_OFFSET_DEG = -10.0f;
 constexpr float HEAD_EMA_ALPHA = 0.90f;
 
 // Startup safety: do not immediately command the head to the IMU angle.
 // Wait briefly, then ramp the commanded head angles toward level at a
 // bounded speed. This prevents a sudden snap when the Teensy powers up.
 constexpr uint32_t HEAD_STARTUP_HOLD_MS = 5000;
-constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 90.0f;
+constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 180.0f;
 
 constexpr float HEAD_PITCH_DIRECTION = -1.0f; // Head servo direction independent of IMU coordinates
 constexpr float HEAD_ROLL_DIRECTION  = 1.0f;
