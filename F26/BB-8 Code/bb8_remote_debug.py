@@ -9,20 +9,26 @@ c = json.loads((Path(__file__).resolve().parent / 'config.json').read_text())
 address = (c['body_host'], c['body_port'])
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.settimeout(1.5)
-print('Remote emulator: ps5, beacon, apriltag, stop, estop, status, quit')
+print('BB-8 Remote Debug')
+print('Modes: ps5 | beacon | apriltag | demo (movement demo)')
+print('Controls: stop | estop | status | quit')
 try:
     while True:
         try:
             cmd = input('remote> ').strip().upper()
         except (EOFError, KeyboardInterrupt):
             break
+        if cmd in ('HELP', '?'):
+            print('Modes: ps5 | beacon | apriltag | demo (movement demo)')
+            print('Controls: stop | estop | status | quit')
+            continue
         if cmd == 'QUIT':
             break
-        if cmd not in ('PS5', 'BEACON', 'APRILTAG', 'STOP', 'ESTOP', 'STATUS'):
-            print('Unknown command')
+        if cmd not in ('PS5', 'BEACON', 'APRILTAG', 'DEMO', 'STOP', 'ESTOP', 'STATUS'):
+            print('Unknown command. Enter HELP for available commands.')
             continue
         packet = {'token': c['token'],
-                  'command': 'START' if cmd in ('PS5', 'BEACON', 'APRILTAG') else cmd,
+                  'command': 'START' if cmd in ('PS5', 'BEACON', 'APRILTAG', 'DEMO') else cmd,
                   'mode': cmd}
         if cmd == 'STATUS':
             # Clear any delayed replies before making a new request.
@@ -57,6 +63,7 @@ try:
             for _ in range(3):
                 s.sendto(json.dumps(packet).encode(), address)
                 time.sleep(0.07)
-            print(f'Sent {cmd} to {address[0]}:{address[1]}')
+            label = 'MOVEMENT DEMO' if cmd == 'DEMO' else cmd
+            print(f'Sent {label} to {address[0]}:{address[1]}')
 finally:
     s.close()
