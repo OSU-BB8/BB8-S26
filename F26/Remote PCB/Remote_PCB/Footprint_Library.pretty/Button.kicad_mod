@@ -3,11 +3,11 @@
 	(generator "pcbnew")
 	(generator_version "10.0")
 	(layer "F.Cu")
-	(property "Reference" "REF**"
+	(property "Reference" "U6"
 		(at 0 -0.5 0)
 		(unlocked yes)
 		(layer "F.SilkS")
-		(uuid "6f50d6d6-f438-48d1-a636-1068dabf4d75")
+		(uuid "e0b459fc-21f8-46da-82ca-c8540517d36f")
 		(effects
 			(font
 				(size 1 1)
@@ -15,11 +15,11 @@
 			)
 		)
 	)
-	(property "Value" "Button"
+	(property "Value" "~"
 		(at 0 1 0)
 		(unlocked yes)
 		(layer "F.Fab")
-		(uuid "89c9ce9e-f444-4ba8-bf66-903903d57c74")
+		(uuid "829ec118-3199-41c0-9b12-717ad3cb6ff9")
 		(effects
 			(font
 				(size 1 1)
@@ -32,7 +32,7 @@
 		(unlocked yes)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "fe27cff0-3b2e-420b-ad58-7a997e494ac4")
+		(uuid "0b8ca983-3e8f-4d65-b990-5a741a809c17")
 		(effects
 			(font
 				(size 1 1)
@@ -45,7 +45,7 @@
 		(unlocked yes)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "a60bd1f0-2f68-4a80-a6e9-09a59e3c7046")
+		(uuid "c31ea540-e96a-4529-95bb-00ebdebf8b04")
 		(effects
 			(font
 				(size 1 1)
@@ -53,6 +53,8 @@
 			)
 		)
 	)
+	(sheetname "/")
+	(sheetfile "Remote_PCB.kicad_sch")
 	(attr smd)
 	(duplicate_pad_numbers_are_jumpers no)
 	(fp_rect
@@ -64,13 +66,13 @@
 		)
 		(fill no)
 		(layer "F.SilkS")
-		(uuid "fc209663-5c34-4638-b88f-bc04527584f7")
+		(uuid "7cdabecb-7015-4bf4-875f-dc3c5c53a60c")
 	)
 	(fp_text user "${REFERENCE}"
 		(at 0 2.5 0)
 		(unlocked yes)
 		(layer "F.Fab")
-		(uuid "f7d2f822-aac1-40d8-b043-890511c32392")
+		(uuid "cd6407c2-e047-4149-85ee-fe6a298395ec")
 		(effects
 			(font
 				(size 1 1)
@@ -80,8 +82,8 @@
 	)
 	(pad "1" thru_hole custom
 		(at 6.085037 -2.794)
-		(size 1.75 1.75)
-		(drill 0.8)
+		(size 2.5 2.5)
+		(drill 1.6)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(thermal_bridge_angle 90)
@@ -90,12 +92,12 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "a0ddcd18-55c7-43fc-a451-a37391f1282a")
+		(uuid "86e3ee11-a264-487c-9af6-25516ad6f23c")
 	)
 	(pad "2" thru_hole custom
 		(at 6.085037 2.794)
-		(size 1.75 1.75)
-		(drill 0.8)
+		(size 2.5 2.5)
+		(drill 1.6)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(thermal_bridge_angle 90)
@@ -104,12 +106,12 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "e0458fd8-7509-4fa5-9155-f96b1489fc1b")
+		(uuid "2adc70f6-fd00-444b-a7a6-031124912af7")
 	)
 	(pad "3" thru_hole custom
 		(at -6.096 -2.794)
-		(size 1.75 1.75)
-		(drill 0.8)
+		(size 2.5 2.5)
+		(drill 1.6)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(thermal_bridge_angle 90)
@@ -118,12 +120,12 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "210ba4f9-0979-498b-86e1-640727b92cf6")
+		(uuid "3a3fd06f-5e01-492e-9b8f-9d4d1c0742eb")
 	)
 	(pad "4" thru_hole custom
 		(at -6.106963 2.794)
-		(size 1.75 1.75)
-		(drill 0.8)
+		(size 2.5 2.5)
+		(drill 1.6)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(thermal_bridge_angle 90)
@@ -132,7 +134,7 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "678427d7-8393-4529-8766-581087870ba9")
+		(uuid "4646638a-9c61-4b70-8965-2e31a6449869")
 	)
 	(embedded_fonts no)
 )

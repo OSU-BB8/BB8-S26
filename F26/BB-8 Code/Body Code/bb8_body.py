@@ -4,7 +4,7 @@ import json,os,signal,socket,subprocess,sys,threading,time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 C=json.loads((ROOT/'config.json').read_text())
-lock=threading.RLock(); relay_lock=threading.RLock(); relay_device=None; relay_socket_path='/tmp/bb8-relay.sock'; state='IDLE'; mode=None; proc=None; last_remote=time.monotonic(); last_head=time.monotonic(); running=True
+lock=threading.RLock(); relay_lock=threading.RLock(); relay_device=None; teensy_enable=None; relay_socket_path='/tmp/bb8-relay.sock'; state='IDLE'; mode=None; proc=None; last_remote=time.monotonic(); last_head=time.monotonic(); running=True
 sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sock.bind(('0.0.0.0',C['body_port'])); sock.settimeout(.25)
 head=(C['head_host'],C['head_port'])
 head_estop_ack=threading.Event()
@@ -17,6 +17,19 @@ def init_relay():
         return
     from gpiozero import OutputDevice
     relay_device=OutputDevice(20,active_high=C['relay_active_high'],initial_value=False)
+
+def init_teensy_enable():
+    global teensy_enable
+    from gpiozero import OutputDevice
+    teensy_enable = OutputDevice(21, active_high=True, initial_value=False)
+
+def teensy_off():
+    if teensy_enable is not None: teensy_enable.off()
+
+def teensy_on():
+    if teensy_enable is None:
+        raise RuntimeError('Teensy enable GPIO21 not initialized')
+    teensy_enable.on()
 
 def relay_off():
     with relay_lock:
@@ -65,6 +78,8 @@ def stop():
     with lock:
         if state=='ESTOP': return
         state='STOPPING'
+        teensy_off()
+        relay_off()
         stop_child()
         for _ in range(3): tx('STOP')
         mode=None;state='IDLE';print('[BODY] IDLE / relay OFF',flush=True)
@@ -92,8 +107,15 @@ def start(selected):
         if not (ROOT/script).is_file():
             print('[BLOCKED] Missing mode script:', ROOT/script,flush=True);stop();return
         env=os.environ.copy();env['BB8_RELAY_ACTIVE_HIGH']='1' if C['relay_active_high'] else '0'
-        proc=subprocess.Popen([sys.executable,'-u',str(ROOT/script)],cwd=ROOT,env=env,start_new_session=True)
-        mode=selected;state='RUNNING';print('[BODY] RUNNING',mode,flush=True)
+        try:
+            proc=subprocess.Popen([sys.executable,'-u',str(ROOT/script)],cwd=ROOT,env=env,start_new_session=True)
+            mode=selected;state='RUNNING'
+            teensy_on()  # Permit Teensy outputs only after launching an active mode.
+        except Exception:
+            teensy_off(); relay_off(); stop_child()
+            mode=None; state='IDLE'
+            raise
+        print('[BODY] RUNNING',mode,flush=True)
 def request_poweroff():
     # Requires narrow passwordless sudoers rule documented in README.
     try:
@@ -110,6 +132,8 @@ def estop():
     estop_started.set()
     with lock:
         state='ESTOP'
+        teensy_off()
+        relay_off()
         # Kill the mode process first; do not call stop() (ESTOP is latched).
         stop_child()
         mode=None
@@ -156,6 +180,7 @@ def handle(msg,addr=None):
                 'head_heartbeat_age_s': round(time.monotonic() - last_head, 1),
                 'relay_configured': relay_device is not None,
                 'relay_enabled': bool(relay_device.value) if relay_device is not None else False,
+                'teensy_enable': bool(teensy_enable.value) if teensy_enable is not None else False,
                 'mode_process_alive': bool(proc is not None and proc.poll() is None),
                 'shutdown_enabled': C['allow_shutdown'],
             }
@@ -179,6 +204,7 @@ def main():
     if C['relay_active_high'] is None:
         print('GPIO polarity unverified: configure before hardware operation',flush=True)
     else:init_relay()
+    init_teensy_enable()  # GPIO21 LOW on startup and while IDLE
     threading.Thread(target=relay_server,daemon=True).start()
     threading.Thread(target=receiver,daemon=True).start()
     if C['debug_console']:threading.Thread(target=console,daemon=True).start()
@@ -195,7 +221,9 @@ def main():
     except KeyboardInterrupt:pass
     finally:
         if state!='ESTOP':stop()
+        teensy_off()
         relay_off()
+        if teensy_enable is not None: teensy_enable.close()
         if relay_device is not None: relay_device.close()
         sock.close()
 if __name__=='__main__':main()

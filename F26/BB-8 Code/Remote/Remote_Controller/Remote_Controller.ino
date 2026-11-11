@@ -29,6 +29,16 @@ constexpr int ENC_DT = 5;
 constexpr int ENC_SW = 6;
 constexpr int ESTOP_PIN = 14;
 
+// Battery monitor: 100k / 100k divider, ADC on GPIO 7
+constexpr int BATTERY_PIN = 7;
+constexpr float BATTERY_DIVIDER_RATIO = 2.0f;
+constexpr float BATTERY_CALIBRATION = 1.18f; // adjustment between calculated and real voltage
+constexpr unsigned long BATTERY_INTERVAL_MS = 5000;
+unsigned long lastBatteryRead = 0;
+int batteryPercent = -1;
+float batteryVoltage = -1.0f;
+bool batteryDirty = true;
+
 constexpr unsigned long LONG_PRESS_MS = 900;
 constexpr unsigned long STATUS_INTERVAL_MS = 800;
 constexpr unsigned long STATUS_STALE_MS = 2500;
@@ -76,6 +86,7 @@ unsigned long lastHeartbeat = 0;
 unsigned long lastWifiAttempt = 0;
 
 unsigned long pressStarted = 0;
+bool longPressHandled = false;
 unsigned long lastEncoderEdge = 0;
 unsigned long lastButtonTransition = 0;
 unsigned long lastEstopTransition = 0;
@@ -91,6 +102,62 @@ bool headerDirty = true;
 bool detailsDirty = true;
 
 int lastSelection = -1;
+
+// ----------------------------------------------------
+// Battery monitor (approximate resting-voltage lookup)
+// ----------------------------------------------------
+
+int batteryVoltageToPercent(float voltage) {
+  const float volts[] = {3.70f, 3.715f, 3.725f, 3.75f, 3.775f,
+                         3.80f, 3.825f, 3.85f, 3.89f};
+  const int percents[] = {0, 10, 20, 35, 50, 65, 80, 90, 100};
+  const int n = sizeof(volts) / sizeof(volts[0]);
+
+  if (voltage <= volts[0]) return 0;
+  if (voltage >= volts[n - 1]) return 100;
+  for (int i = 1; i < n; ++i) {
+    if (voltage <= volts[i]) {
+      float f = (voltage - volts[i - 1]) / (volts[i] - volts[i - 1]);
+      return (int)roundf(percents[i - 1] + f * (percents[i] - percents[i - 1]));
+    }
+  }
+  return 0;
+}
+
+void updateBattery() {
+  // analogReadMilliVolts uses the ESP32 ADC calibration where supported.
+  uint32_t sum = 0;
+  for (int i = 0; i < 32; ++i) {
+    sum += analogReadMilliVolts(BATTERY_PIN);
+    delayMicroseconds(250);
+  }
+  float newVoltage = (sum / 32.0f) / 1000.0f *
+                     BATTERY_DIVIDER_RATIO * BATTERY_CALIBRATION;
+  if (batteryVoltage < 0.0f || fabsf(newVoltage - batteryVoltage) >= 0.01f) {
+    if (statusScreen) detailsDirty = true;
+  }
+  batteryVoltage = newVoltage;
+  int nextPercent = batteryVoltageToPercent(batteryVoltage);
+  if (nextPercent != batteryPercent) {
+    batteryPercent = nextPercent;
+    batteryDirty = true;
+  }
+  Serial.printf("Battery: %.3f V | %d%%\n", batteryVoltage, batteryPercent);
+}
+
+void drawBattery() {
+  // Right-aligned percentage in the bottom-right of the 160x128 TFT.
+  tft.fillRect(125, 115, 35, 13, ST77XX_BLACK);
+  tft.setTextSize(1);
+  tft.setTextWrap(false);
+  tft.setTextColor(batteryPercent < 0 ? ST77XX_WHITE :
+                   batteryPercent < 15 ? ST77XX_RED :
+                   batteryPercent < 30 ? ST77XX_YELLOW : ST77XX_GREEN);
+  String label = batteryPercent < 0 ? "--%" : String(batteryPercent) + "%";
+  tft.setCursor(159 - label.length() * 6, 117);
+  tft.print(label);
+  batteryDirty = false;
+}
 
 // ----------------------------------------------------
 // Body Pi connection status
@@ -313,8 +380,13 @@ void drawStatusDetails() {
   bool online = bodyOnline(millis());
 
   tft.setCursor(4, 28);
-  tft.print("BODY: ");
-  tft.print(online ? "ONLINE" : "OFFLINE");
+  tft.print("BATTERY: ");
+  if (batteryVoltage >= 0.0f) {
+    tft.print(batteryVoltage, 2);
+    tft.print(" V");
+  } else {
+    tft.print("-- V");
+  }
 
   tft.setCursor(4, 42);
   tft.print("STATE: ");
@@ -358,6 +430,7 @@ void drawStatusDetails() {
   );
 
   detailsDirty = false;
+  batteryDirty = true; // Status refresh clears the battery area.
 }
 
 // ----------------------------------------------------
@@ -379,10 +452,11 @@ void drawMenuFooter() {
 
   tft.print(
     estopLatched ? "STOP LATCHED"
-                 : "Press:Go Hold:Status"
+                 : "Hold:Status"
   );
 
   detailsDirty = false;
+  batteryDirty = true; // Footer refresh clears the battery area.
 }
 
 // ----------------------------------------------------
@@ -395,6 +469,7 @@ void draw() {
 
     tft.fillScreen(ST77XX_BLACK);
     headerDirty = true;
+    batteryDirty = true;
 
     if (statusScreen) {
       drawStatusDetails();
@@ -432,6 +507,10 @@ void draw() {
 
   if (headerDirty) {
     drawHeader();
+  }
+
+  if (batteryDirty) {
+    drawBattery();
   }
 }
 
@@ -489,6 +568,10 @@ void setup() {
   pinMode(ENC_DT, INPUT_PULLUP);
   pinMode(ENC_SW, INPUT_PULLUP);
   pinMode(ESTOP_PIN, INPUT_PULLUP);
+  analogReadResolution(12);
+  analogSetPinAttenuation(BATTERY_PIN, ADC_11db);
+  updateBattery();
+  lastBatteryRead = millis();
 
   previousClk = digitalRead(ENC_CLK);
 
@@ -525,6 +608,11 @@ void setup() {
 void loop() {
 
   unsigned long now = millis();
+
+  if (now - lastBatteryRead >= BATTERY_INTERVAL_MS) {
+    lastBatteryRead = now;
+    updateBattery();
+  }
 
   bool wifi = WiFi.status() == WL_CONNECTED;
 
@@ -599,7 +687,7 @@ void loop() {
     if (er == LOW) {
 
       estopLatched = true;
-      sendCommand("STOP");
+      sendCommand("ESTOP");
       detailsDirty = true;
     }
   }
@@ -624,7 +712,7 @@ void loop() {
     previousClk = clk;
   }
 
-  // Encoder pushbutton
+  // Encoder pushbutton: switch screens as soon as the hold threshold is reached.
   int sw = digitalRead(ENC_SW);
 
   if (sw != rawButton) {
@@ -633,29 +721,28 @@ void loop() {
   }
 
   if (now - lastButtonTransition >= 35 &&
-      sw != stableButton) {
+      rawButton != stableButton) {
+    stableButton = rawButton;
 
-    stableButton = sw;
-
-    if (sw == LOW) {
-
+    if (stableButton == LOW) {
       pressStarted = now;
-
-    } else if (pressStarted) {
-
-      unsigned long held = now - pressStarted;
-      pressStarted = 0;
-
-      if (held >= LONG_PRESS_MS) {
-
-        statusScreen = !statusScreen;
-        redrawAll = true;
-
-      } else {
-
+      longPressHandled = false;
+    } else {
+      // A short press activates the selected mode only if no long press occurred.
+      if (pressStarted != 0 && !longPressHandled) {
         shortPress();
       }
+      pressStarted = 0;
+      longPressHandled = false;
     }
+  }
+
+  // Trigger once while held, not on release. Releasing will not trigger a mode.
+  if (stableButton == LOW && pressStarted != 0 &&
+      !longPressHandled && now - pressStarted >= LONG_PRESS_MS) {
+    statusScreen = !statusScreen;
+    redrawAll = true;
+    longPressHandled = true;
   }
 
   static bool lastOnline = false;
@@ -669,7 +756,7 @@ void loop() {
     detailsDirty = true;
   }
 
-  if (redrawAll || headerDirty || detailsDirty ||
+  if (redrawAll || headerDirty || detailsDirty || batteryDirty ||
       (!statusScreen && lastSelection != selected)) {
 
     draw();

@@ -7,7 +7,7 @@
   "debug_console": true,
   "allow_shutdown": true,
   "relay_active_high": true,
-  "remote_timeout_seconds": 2.0,
+  "remote_timeout_seconds": 10.0,
   "remote_required": false,
   "head_timeout_seconds": 3.0,
   "apriltag_python": "/usr/bin/python3"

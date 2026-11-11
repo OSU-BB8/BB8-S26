@@ -3,11 +3,11 @@
 	(generator "pcbnew")
 	(generator_version "10.0")
 	(layer "F.Cu")
-	(property "Reference" "REF**"
-		(at 0 -0.5 0)
+	(property "Reference" "U4"
+		(at -10.414 5.85 0)
 		(unlocked yes)
 		(layer "F.SilkS")
-		(uuid "d8150e70-53f9-46ca-86eb-b92c7adcf037")
+		(uuid "b7bf481c-0fd3-45f5-99fe-f06cf7d9a2ba")
 		(effects
 			(font
 				(size 1 1)
@@ -15,11 +15,11 @@
 			)
 		)
 	)
-	(property "Value" "Battery Module"
-		(at 0 1 0)
+	(property "Value" "~"
+		(at -10.414 7.35 0)
 		(unlocked yes)
 		(layer "F.Fab")
-		(uuid "c608de8f-dd31-48e4-a946-15f0f4d18915")
+		(uuid "ec2ab606-39bc-47ca-9f78-113196e8febc")
 		(effects
 			(font
 				(size 1 1)
@@ -28,11 +28,11 @@
 		)
 	)
 	(property "Datasheet" ""
-		(at 0 0 0)
+		(at -10.414 6.35 0)
 		(unlocked yes)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "b33dfa2c-4177-423a-bb76-4a795de99c34")
+		(uuid "5bb6caea-fe2a-4b1b-ae90-1c19111426a8")
 		(effects
 			(font
 				(size 1 1)
@@ -41,11 +41,11 @@
 		)
 	)
 	(property "Description" ""
-		(at 0 0 0)
+		(at -10.414 6.35 0)
 		(unlocked yes)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "ae46a932-e3a3-4652-8484-17b0e64040e8")
+		(uuid "406d57e1-ccd6-43da-b37b-20d3ca55f1e8")
 		(effects
 			(font
 				(size 1 1)
@@ -53,24 +53,26 @@
 			)
 		)
 	)
+	(sheetname "/")
+	(sheetfile "Remote_PCB.kicad_sch")
 	(attr smd)
 	(duplicate_pad_numbers_are_jumpers no)
 	(fp_rect
-		(start -14.096292 -8.508993)
-		(end 14.097708 8.509007)
+		(start -24.510292 -1.269999)
+		(end 3.683708 15.239999)
 		(stroke
 			(width 0.1)
 			(type default)
 		)
 		(fill no)
 		(layer "F.SilkS")
-		(uuid "ec9dc28d-7339-48a4-9699-11c3cc565c87")
+		(uuid "12fc64b8-d5e5-42c7-b39b-b2c42e2244b7")
 	)
 	(fp_text user "${REFERENCE}"
-		(at 0 2.5 0)
+		(at -10.414 8.85 0)
 		(unlocked yes)
 		(layer "F.Fab")
-		(uuid "f46a85cf-b9f8-487d-b65a-f80a7aa56f10")
+		(uuid "5ca2c3ef-b4e5-4f5c-9b10-5b406aa0a1b4")
 		(effects
 			(font
 				(size 1 1)
@@ -79,7 +81,7 @@
 		)
 	)
 	(pad "1" thru_hole custom
-		(at -12.7 -7.112)
+		(at -23 0)
 		(size 1.75 1.75)
 		(drill 0.8)
 		(layers "*.Cu" "*.Mask")
@@ -90,10 +92,10 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "a04faab5-0455-4abb-91e7-0f0c21266cb7")
+		(uuid "8af4d926-a7ed-46fd-b456-1af9e26b8655")
 	)
 	(pad "2" thru_hole custom
-		(at -12.614235 7.366)
+		(at -23 14)
 		(size 1.75 1.75)
 		(drill 0.8)
 		(layers "*.Cu" "*.Mask")
@@ -104,10 +106,10 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "e2623a57-f530-41f2-95fc-ae7b87db7acb")
+		(uuid "eb96da28-3b2d-4596-929f-410315138907")
 	)
 	(pad "3" thru_hole custom
-		(at 10.414 -6.35)
+		(at 0 0)
 		(size 1.75 1.75)
 		(drill 0.8)
 		(layers "*.Cu" "*.Mask")
@@ -118,10 +120,38 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "077f9d5f-6670-4ee7-aaa8-85da5cda3601")
+		(uuid "5a2644c3-08db-469a-a2bc-11b3d0147734")
+	)
+	(pad "4" thru_hole custom
+		(at 0 3)
+		(size 1.75 1.75)
+		(drill 0.8)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(thermal_bridge_angle 90)
+		(options
+			(clearance outline)
+			(anchor circle)
+		)
+		(primitives)
+		(uuid "74fb191a-edf4-4eb7-b27d-e69890f8e1a0")
+	)
+	(pad "5" thru_hole custom
+		(at 0 11)
+		(size 1.75 1.75)
+		(drill 0.8)
+		(layers "*.Cu" "*.Mask")
+		(remove_unused_layers no)
+		(thermal_bridge_angle 90)
+		(options
+			(clearance outline)
+			(anchor circle)
+		)
+		(primitives)
+		(uuid "1425002d-8a66-4993-97ea-d193a5ab667a")
 	)
 	(pad "6" thru_hole custom
-		(at 10.414 6.35)
+		(at 0 14)
 		(size 1.75 1.75)
 		(drill 0.8)
 		(layers "*.Cu" "*.Mask")
@@ -132,7 +162,7 @@
 			(anchor circle)
 		)
 		(primitives)
-		(uuid "bf9e61d7-4fc4-4167-a434-65c89a3341a6")
+		(uuid "82faa5f7-e91e-41ec-8040-e82e5a5b1b41")
 	)
 	(embedded_fonts no)
 )
