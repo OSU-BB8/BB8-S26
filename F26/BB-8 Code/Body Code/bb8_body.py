@@ -1,229 +1,403 @@
 #!/usr/bin/env python3
-"""Single owner of BB-8 modes. Children own GPIO20 and Teensy serial only while running."""
-import json,os,signal,socket,subprocess,sys,threading,time
+"""Own GPIO20/GPIO21; serialize mode changes while UDP reception stays responsive."""
+import json
+import os
 from pathlib import Path
-ROOT=Path(__file__).resolve().parent
-C=json.loads((ROOT/'config.json').read_text())
-lock=threading.RLock(); relay_lock=threading.RLock(); relay_device=None; teensy_enable=None; relay_socket_path='/tmp/bb8-relay.sock'; state='IDLE'; mode=None; proc=None; last_remote=time.monotonic(); last_head=time.monotonic(); running=True
-sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); sock.bind(('0.0.0.0',C['body_port'])); sock.settimeout(.25)
-head=(C['head_host'],C['head_port'])
-head_estop_ack=threading.Event()
-estop_started=threading.Event()
-def tx(cmd,selected=None):
-    sock.sendto(json.dumps({'token':C['token'],'command':cmd,'mode':selected}).encode(),head)
-def init_relay():
-    global relay_device
-    if C['relay_active_high'] is None:
-        return
-    from gpiozero import OutputDevice
-    relay_device=OutputDevice(20,active_high=C['relay_active_high'],initial_value=False)
+import queue
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
 
-def init_teensy_enable():
-    global teensy_enable
-    from gpiozero import OutputDevice
-    teensy_enable = OutputDevice(21, active_high=True, initial_value=False)
+ROOT = Path(__file__).resolve().parent
+SCRIPTS = {
+    'PS5': 'PS5_Controller.py', 'BEACON': 'Beacon_Target_Control.py',
+    'APRILTAG': 'Beacon_Target_Control.py', 'DEMO': 'Movement_Demo.py',
+}
 
-def teensy_off():
-    if teensy_enable is not None: teensy_enable.off()
 
-def teensy_on():
-    if teensy_enable is None:
-        raise RuntimeError('Teensy enable GPIO21 not initialized')
-    teensy_enable.on()
+class BodySupervisor:
+    def __init__(self, config, root=ROOT, relay_socket_path='/tmp/bb8-relay.sock'):
+        self.config = config
+        self.root = Path(root)
+        self.relay_socket_path = relay_socket_path
+        self.lock = threading.RLock()
+        self.commands = queue.Queue()
+        self.shutdown = threading.Event()
+        self.estop_started = threading.Event()
+        self.head_estop_ack = threading.Event()
+        self.generation = 0
+        self.state = 'IDLE'
+        self.mode = None
+        self.proc = None
+        self.last_remote = time.monotonic()
+        self.last_head = None
+        self.relay_device = None
+        self.teensy_enable = None
+        self.sock = None
+        self.relay_socket = None
+        self.workers = []
 
-def relay_off():
-    with relay_lock:
-        if relay_device is not None: relay_device.off()
+    def outputs_off(self):
+        # Caller holds lock, preventing a concurrent relay ON request.
+        if self.teensy_enable is not None:
+            self.teensy_enable.off()
+        if self.relay_device is not None:
+            self.relay_device.off()
 
-def relay_server():
-    try: os.unlink(relay_socket_path)
-    except FileNotFoundError: pass
-    server=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-    server.bind(relay_socket_path)
-    os.chmod(relay_socket_path,0o600)
-    server.listen(4)
-    server.settimeout(.2)
-    try:
-        while running:
-            try: conn,_=server.accept()
-            except socket.timeout: continue
+    def tx(self, command, selected=None):
+        if self.sock is None:
+            return
+        packet = {'token': self.config['token'], 'command': command, 'mode': selected}
+        try:
+            self.sock.sendto(json.dumps(packet).encode(),
+                             (self.config['head_host'], self.config['head_port']))
+        except OSError as exc:
+            print('[HEAD] Send error:', exc, flush=True)
+
+    def request_start(self, selected):
+        if selected not in SCRIPTS:
+            return
+        with self.lock:
+            if self.estop_started.is_set() or self.shutdown.is_set():
+                return
+            self.last_remote = time.monotonic()
+            if self.mode == selected and (self.state == 'STARTING' or
+                    (self.state == 'RUNNING' and self.proc is not None and
+                     self.proc.poll() is None)):
+                return
+            self.generation += 1
+            self.outputs_off()
+            self.state, self.mode = 'STARTING', selected
+            self.commands.put(('START', selected, self.generation))
+
+    def request_stop(self, emergency=False):
+        with self.lock:
+            if self.estop_started.is_set():
+                return
+            if emergency:
+                self.estop_started.set()
+                self.head_estop_ack.clear()
+            self.generation += 1  # Cancel queued/in-progress starts immediately.
+            self.state = 'ESTOP' if emergency else 'STOPPING'
+            self.outputs_off()
+            self.commands.put(('ESTOP' if emergency else 'STOP', None, self.generation))
+
+    def request_shutdown(self, *_):
+        self.shutdown.set()
+        with self.lock:
+            self.generation += 1
+            self.outputs_off()
+
+    def active(self, generation):
+        return (generation == self.generation and not self.estop_started.is_set()
+                and not self.shutdown.is_set())
+
+    def stop_child(self):
+        # Only the main thread creates/reaps children. Waiting must not hold lock.
+        with self.lock:
+            child = self.proc
+        if child is not None:
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    child.wait(timeout=1.5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    child.wait(timeout=1)
+            with self.lock:
+                if self.proc is child:
+                    self.proc = None
+
+    def stop(self, generation=None):
+        with self.lock:
+            self.outputs_off()
+        self.stop_child()
+        for _ in range(3):
+            self.tx('STOP')
+        with self.lock:
+            if not self.estop_started.is_set() and (generation is None or
+                                                    generation == self.generation):
+                self.state, self.mode = 'IDLE', None
+        print('[BODY] Child stopped / outputs OFF', flush=True)
+
+    def start(self, selected, generation):
+        if not self.active(generation):
+            return
+        self.stop_child()
+        if not self.active(generation):
+            return
+        if self.config['relay_active_high'] is None:
+            print('[BLOCKED] Verify relay_active_high before starting', flush=True)
+            self.stop(generation)
+            return
+        script = self.root / SCRIPTS[selected]
+        if not script.is_file():
+            print('[BLOCKED] Missing mode script:', script, flush=True)
+            self.stop(generation)
+            return
+        for _ in range(3):
+            self.tx('STOP')
+        self.tx('START', selected)
+        if selected in ('BEACON', 'APRILTAG'):
+            deadline = time.monotonic() + 5
+            while self.active(generation):
+                with self.lock:
+                    ready = self.last_head is not None and time.monotonic() - self.last_head <= 1.5
+                if ready:
+                    break
+                if time.monotonic() >= deadline:
+                    print('[BLOCKED] Head heartbeat missing', flush=True)
+                    self.stop(generation)
+                    return
+                self.shutdown.wait(.05)
+        # Cancellation and enable share the same lock as STOP/ESTOP.
+        with self.lock:
+            if not self.active(generation):
+                return
+            if self.teensy_enable is None:
+                raise RuntimeError('GPIO21 enable is not initialized')
+            self.proc = subprocess.Popen(
+                [sys.executable, '-u', str(script)], cwd=self.root,
+                start_new_session=True)
+            # A signal handler can run on this thread during Popen.
+            if not self.active(generation):
+                return
+            self.state, self.mode = 'RUNNING', selected
+            self.teensy_enable.on()
+            if not self.active(generation):
+                self.outputs_off()
+        print('[BODY] RUNNING', selected, flush=True)
+
+    def request_poweroff(self):
+        try:
+            result = subprocess.run(['sudo', '-n', '/usr/bin/systemctl', 'poweroff'],
+                                    timeout=5, capture_output=True, text=True)
+            if result.returncode:
+                print('[SHUTDOWN FAILED]', result.stderr.strip(), flush=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print('[SHUTDOWN FAILED]', exc, flush=True)
+
+    def estop(self):
+        # Main thread waits for the head and poweroff; receiver stays alive.
+        with self.lock:
+            self.outputs_off()
+        self.stop_child()
+        with self.lock:
+            self.mode = None
+        print('[BODY] ESTOP latched: child stopped, outputs OFF', flush=True)
+        deadline = time.monotonic() + 4
+        while not self.shutdown.is_set() and time.monotonic() < deadline:
+            self.tx('ESTOP')
+            if self.head_estop_ack.wait(.2):
+                break
+        print('[BODY] Head ESTOP ACK:', self.head_estop_ack.is_set(), flush=True)
+        if self.config['allow_shutdown'] and not self.shutdown.is_set():
+            self.request_poweroff()
+        else:
+            print('[BODY] Shutdown disabled or service stopping', flush=True)
+        self.shutdown.set()  # Only AFTER poweroff has finished.
+
+    def status(self):
+        with self.lock:
+            age = None if self.last_head is None else time.monotonic() - self.last_head
+            return {
+                'type': 'STATUS_REPLY', 'state': self.state, 'mode': self.mode,
+                'head_connected': age is not None and age <= self.config['head_timeout_seconds'],
+                'head_heartbeat_age_s': None if age is None else round(age, 1),
+                'relay_configured': self.relay_device is not None,
+                'relay_enabled': bool(self.relay_device.value) if self.relay_device is not None else False,
+                'teensy_enable': bool(self.teensy_enable.value) if self.teensy_enable is not None else False,
+                'mode_process_alive': self.proc is not None and self.proc.poll() is None,
+                'shutdown_enabled': self.config['allow_shutdown'],
+            }
+
+    def handle(self, msg, addr=None):
+        if not isinstance(msg, dict) or msg.get('token') != self.config['token']:
+            return
+        command = str(msg.get('command', '')).upper()
+        if command == 'HEAD_HEARTBEAT':
+            if addr and addr[0] == self.config['head_host']:
+                with self.lock:
+                    self.last_head = time.monotonic()
+        elif command == 'HEAD_ACK':
+            if addr and addr[0] == self.config['head_host'] and msg.get('for') == 'ESTOP':
+                self.head_estop_ack.set()
+        elif command == 'STATUS':
+            response = self.status()
+            if addr is None:
+                print('[BODY]', json.dumps(response), flush=True)
+            else:
+                self.sock.sendto(json.dumps(response).encode(), addr)
+        elif command == 'ESTOP':
+            self.request_stop(emergency=True)
+        elif command == 'STOP':
+            self.request_stop()
+        elif command == 'START':
+            self.request_start(str(msg.get('mode', '')).upper())
+        elif command == 'HEARTBEAT':
+            with self.lock:
+                self.last_remote = time.monotonic()
+
+    def receiver(self):
+        while not self.shutdown.is_set():
+            try:
+                raw, addr = self.sock.recvfrom(4096)
+                self.handle(json.loads(raw), addr)
+            except socket.timeout:
+                pass
+            except (OSError, ValueError) as exc:
+                if not self.shutdown.is_set():
+                    print('[BODY] Receive error:', exc, flush=True)
+
+    def relay_request(self, command):
+        with self.lock:
+            if command == 'OFF':
+                if self.relay_device is not None:
+                    self.relay_device.off()
+                return 'OK'
+            permitted = (not self.shutdown.is_set() and not self.estop_started.is_set()
+                         and self.state == 'RUNNING' and self.proc is not None
+                         and self.proc.poll() is None and self.relay_device is not None)
+            if command == 'ON' and permitted:
+                self.relay_device.on()
+                return 'OK'
+            return 'DENIED'
+
+    def relay_server(self):
+        while not self.shutdown.is_set():
+            try:
+                conn, _ = self.relay_socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if not self.shutdown.is_set():
+                    self.request_shutdown()
+                return
             with conn:
                 conn.settimeout(.5)
                 try:
-                    command=conn.recv(128).decode().strip().upper()
-                    with lock:
-                        permitted=(state=='RUNNING' and proc is not None and proc.poll() is None and relay_device is not None)
-                        with relay_lock:
-                            if command=='ON' and permitted: relay_device.on(); reply='OK'
-                            elif command=='OFF': relay_off(); reply='OK'
-                            else: reply='DENIED'
-                    conn.sendall(reply.encode())
-                except (OSError,ValueError) as exc: print('[RELAY]',exc,flush=True)
-    finally:
-        server.close()
-        try:os.unlink(relay_socket_path)
-        except FileNotFoundError:pass
+                    command = conn.recv(128).decode().strip().upper()
+                    conn.sendall(self.relay_request(command).encode())
+                except (OSError, ValueError) as exc:
+                    print('[RELAY]', exc, flush=True)
 
-def stop_child():
-    global proc
-    if proc and proc.poll() is None:
-        os.killpg(proc.pid,signal.SIGTERM)
-        try: proc.wait(timeout=1.5)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid,signal.SIGKILL); proc.wait(timeout=1)
-    proc=None
-    relay_off()
-def stop():
-    global state,mode
-    with lock:
-        if state=='ESTOP': return
-        state='STOPPING'
-        teensy_off()
-        relay_off()
-        stop_child()
-        for _ in range(3): tx('STOP')
-        mode=None;state='IDLE';print('[BODY] IDLE / relay OFF',flush=True)
-def start(selected):
-    global state,mode,proc
-    with lock:
-        if state=='ESTOP': return
-        if selected not in ('PS5','BEACON','APRILTAG','DEMO'): return
-        # A retransmitted START for the current healthy mode must not restart it.
-        if state=='RUNNING' and mode==selected and proc is not None and proc.poll() is None: return
-        if state!='IDLE': stop()
-        if C['relay_active_high'] is None:
-            print('[BLOCKED] Set relay_active_high after verifying hardware',flush=True);return
-        state='STARTING';tx('START',selected)
-        # Do not block the UDP receiver: head heartbeat is handled in receiver thread.
-        # A fresh heartbeat is required for beacon operation.
-        if selected in ('BEACON','APRILTAG'):
-            deadline=time.monotonic()+5
-            while time.monotonic()<deadline and time.monotonic()-last_head>1.5:
-                time.sleep(.05)
-            if time.monotonic()-last_head>1.5:
-                print('[BLOCKED] Head heartbeat missing',flush=True);stop();return
-        script={'PS5':'PS5_Controller.py', 'BEACON':'Beacon_Target_Control.py',
-                'APRILTAG':'Beacon_Target_Control.py', 'DEMO':'Movement_Demo.py'}[selected]
-        if not (ROOT/script).is_file():
-            print('[BLOCKED] Missing mode script:', ROOT/script,flush=True);stop();return
-        env=os.environ.copy();env['BB8_RELAY_ACTIVE_HIGH']='1' if C['relay_active_high'] else '0'
+    def console(self):
+        while not self.shutdown.is_set():
+            try:
+                command = input('bb8> ').strip().upper()
+            except EOFError:
+                return
+            if command in SCRIPTS:
+                self.request_start(command)
+            elif command in ('STOP', 'ESTOP', 'STATUS'):
+                self.handle({'token': self.config['token'], 'command': command})
+
+    def check_failsafes(self):
+        with self.lock:
+            if self.state != 'RUNNING':
+                return
+            now = time.monotonic()
+            reason = None
+            if self.proc is None or self.proc.poll() is not None:
+                reason = 'Child exited'
+            elif self.config['remote_required'] and now - self.last_remote > self.config['remote_timeout_seconds']:
+                reason = 'Remote heartbeat lost'
+            elif self.mode in ('BEACON', 'APRILTAG') and (self.last_head is None or
+                    now - self.last_head > self.config['head_timeout_seconds']):
+                reason = 'Head supervisor lost'
+            if reason:
+                print('[FAILSAFE]', reason, flush=True)
+                self.request_stop()
+
+    def initialize(self):
+        from gpiozero import OutputDevice
+        self.teensy_enable = OutputDevice(21, active_high=True, initial_value=False)
+        if self.config['relay_active_high'] is not None:
+            self.relay_device = OutputDevice(20, active_high=self.config['relay_active_high'], initial_value=False)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('0.0.0.0', self.config['body_port']))
+        self.sock.settimeout(.2)
+        # Bind before receiving START so children cannot race relay-server startup.
         try:
-            proc=subprocess.Popen([sys.executable,'-u',str(ROOT/script)],cwd=ROOT,env=env,start_new_session=True)
-            mode=selected;state='RUNNING'
-            teensy_on()  # Permit Teensy outputs only after launching an active mode.
-        except Exception:
-            teensy_off(); relay_off(); stop_child()
-            mode=None; state='IDLE'
-            raise
-        print('[BODY] RUNNING',mode,flush=True)
-def request_poweroff():
-    # Requires narrow passwordless sudoers rule documented in README.
-    try:
-        result=subprocess.run(['sudo','-n','/usr/bin/systemctl','poweroff'],
-                              timeout=5, capture_output=True, text=True)
-        if result.returncode:
-            print('[SHUTDOWN FAILED]', result.stderr.strip(), flush=True)
-    except Exception as exc:
-        print('[SHUTDOWN FAILED]', repr(exc), flush=True)
+            os.unlink(self.relay_socket_path)
+        except FileNotFoundError:
+            pass
+        self.relay_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.relay_socket.bind(self.relay_socket_path)
+        os.chmod(self.relay_socket_path, 0o600)
+        self.relay_socket.listen(4)
+        self.relay_socket.settimeout(.2)
 
-def estop():
-    global state,mode,running
-    if estop_started.is_set():return
-    estop_started.set()
-    with lock:
-        state='ESTOP'
-        teensy_off()
-        relay_off()
-        # Kill the mode process first; do not call stop() (ESTOP is latched).
-        stop_child()
-        mode=None
-        relay_off()
-    print('[BODY] ESTOP latched: child stopped, relays OFF',flush=True)
-    head_estop_ack.clear()
-    # Retransmit until Head acknowledges, but never wait forever.
-    deadline=time.monotonic()+4.0
-    while time.monotonic()<deadline and not head_estop_ack.is_set():
-        try:tx('ESTOP')
-        except OSError as exc:print('[HEAD] ESTOP send error',repr(exc),flush=True)
-        head_estop_ack.wait(.2)
-    print('[BODY] Head ESTOP ACK:',head_estop_ack.is_set(),flush=True)
-    running=False
-    if C['allow_shutdown']:
-        request_poweroff()
-    else:
-        print('[BODY] Shutdown disabled in config; staying powered for testing',flush=True)
-def handle(msg,addr=None):
-    global last_remote,last_head
-    if msg.get('token')!=C['token']: return
-    cmd=str(msg.get('command','')).upper()
-    if cmd=='HEAD_HEARTBEAT':
-        if addr and addr[0]==C['head_host']: last_head=time.monotonic()
-        return
-    if cmd=='HEAD_ACK':
-        if addr and addr[0]==C['head_host'] and msg.get('for')=='ESTOP':head_estop_ack.set()
-        return
-    if cmd=='ESTOP':
-        if not estop_started.is_set():threading.Thread(target=estop,daemon=True).start()
-        return
-    if estop_started.is_set():return
-    if cmd=='HEARTBEAT':last_remote=time.monotonic();return
-    if cmd=='START':
-        last_remote=time.monotonic();threading.Thread(target=start,args=(str(msg.get('mode','')).upper(),),daemon=True).start()
-    elif cmd=='STOP':threading.Thread(target=stop,daemon=True).start()
-    elif cmd=='STATUS':
-        with lock:
-            response = {
-                'type': 'STATUS_REPLY',
-                'state': state,
-                'mode': mode,
-                'head_connected': time.monotonic() - last_head <= C['head_timeout_seconds'],
-                'head_heartbeat_age_s': round(time.monotonic() - last_head, 1),
-                'relay_configured': relay_device is not None,
-                'relay_enabled': bool(relay_device.value) if relay_device is not None else False,
-                'teensy_enable': bool(teensy_enable.value) if teensy_enable is not None else False,
-                'mode_process_alive': bool(proc is not None and proc.poll() is None),
-                'shutdown_enabled': C['allow_shutdown'],
-            }
-        if addr is not None:
-            sock.sendto(json.dumps(response).encode('utf-8'), addr)
-        else:
-            print('[BODY]', json.dumps(response), flush=True)
-def receiver():
-    while running:
-        try: raw,addr=sock.recvfrom(4096);handle(json.loads(raw),addr)
-        except socket.timeout:pass
-        except Exception as e:print('[BODY] receive error',repr(e),flush=True)
-def console():
-    while running:
-        try: cmd=input('bb8> ').strip().upper()
-        except EOFError:return
-        if cmd in ('PS5','BEACON','APRILTAG','DEMO'):handle({'token':C['token'],'command':'START','mode':cmd})
-        elif cmd in ('STOP','ESTOP','STATUS'):handle({'token':C['token'],'command':cmd})
+    def close(self):
+        self.request_shutdown()
+        try:
+            self.stop()
+        finally:
+            for worker in self.workers:
+                worker.join(timeout=1)
+            with self.lock:
+                self.outputs_off()
+                if self.teensy_enable is not None:
+                    self.teensy_enable.close()
+                if self.relay_device is not None:
+                    self.relay_device.close()
+            if self.sock is not None:
+                self.sock.close()
+            if self.relay_socket is not None:
+                self.relay_socket.close()
+                try:
+                    os.unlink(self.relay_socket_path)
+                except FileNotFoundError:
+                    pass
+
+    def run(self):
+        old_handlers = {}
+        try:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                old_handlers[sig] = signal.signal(sig, self.request_shutdown)
+            self.initialize()
+            for target in (self.relay_server, self.receiver):
+                worker = threading.Thread(target=target, daemon=True)
+                self.workers.append(worker)
+                worker.start()
+            if self.config['debug_console']:
+                threading.Thread(target=self.console, daemon=True).start()
+            while not self.shutdown.is_set():
+                self.check_failsafes()
+                try:
+                    command, selected, generation = self.commands.get(timeout=.1)
+                except queue.Empty:
+                    continue
+                if command == 'ESTOP':
+                    self.estop()
+                elif self.active(generation):
+                    if command == 'START':
+                        self.start(selected, generation)
+                    else:
+                        self.stop(generation)
+        finally:
+            try:
+                self.close()
+            finally:
+                for sig, handler in old_handlers.items():
+                    signal.signal(sig, handler)
+
+
 def main():
-    global running
-    if C['relay_active_high'] is None:
-        print('GPIO polarity unverified: configure before hardware operation',flush=True)
-    else:init_relay()
-    init_teensy_enable()  # GPIO21 LOW on startup and while IDLE
-    threading.Thread(target=relay_server,daemon=True).start()
-    threading.Thread(target=receiver,daemon=True).start()
-    if C['debug_console']:threading.Thread(target=console,daemon=True).start()
-    try:
-        while running:
-            with lock:
-                if state=='RUNNING' and proc and proc.poll() is not None:
-                    print('[FAILSAFE] Child exited',flush=True);stop()
-                if state=='RUNNING' and C['remote_required'] and time.monotonic()-last_remote>C['remote_timeout_seconds']:
-                    print('[FAILSAFE] Remote heartbeat lost',flush=True);stop()
-                if state=='RUNNING' and mode in ('BEACON','APRILTAG') and time.monotonic()-last_head>C['head_timeout_seconds']:
-                    print('[FAILSAFE] Head supervisor lost',flush=True);stop()
-            time.sleep(.1)
-    except KeyboardInterrupt:pass
-    finally:
-        if state!='ESTOP':stop()
-        teensy_off()
-        relay_off()
-        if teensy_enable is not None: teensy_enable.close()
-        if relay_device is not None: relay_device.close()
-        sock.close()
-if __name__=='__main__':main()
+    config = json.loads((ROOT / 'config.json').read_text())
+    if 'BB8_DEBUG_CONSOLE' in os.environ:
+        config['debug_console'] = os.environ['BB8_DEBUG_CONSOLE'] == '1'
+    BodySupervisor(config).run()
+
+
+if __name__ == '__main__':
+    main()

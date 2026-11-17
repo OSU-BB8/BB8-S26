@@ -8,6 +8,9 @@ from pathlib import Path
 c = json.loads((Path(__file__).resolve().parent / 'config.json').read_text())
 address = (c['body_host'], c['body_port'])
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# Windows requires a bound socket before STATUS can drain delayed replies.
+# Port 0 lets the OS choose an available local reply port.
+s.bind(('', 0))
 s.settimeout(1.5)
 print('BB-8 Remote Debug')
 print('Modes: ps5 | beacon | apriltag | demo (movement demo)')

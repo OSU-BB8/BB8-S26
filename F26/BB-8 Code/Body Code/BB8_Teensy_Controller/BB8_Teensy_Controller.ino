@@ -38,8 +38,6 @@ constexpr uint8_t DRIVE2_PHASE_PIN  = 5; //Direction 2
 constexpr uint8_t DRIVE2_PWM_PIN    = 4; //PWM 2
 constexpr uint8_t PIVOT_PHASE_PIN   = 7;
 constexpr uint8_t PIVOT_PWM_PIN     = 6;
-// HIGH only while Body Pi supervisor authorizes movement. External 10k pull-down required.
-constexpr uint8_t PI_ENABLE_PIN = 8;
 
 // Relays are now driven by Body Pi GPIO20/GPIO21, not the Teensy.
 
@@ -67,7 +65,7 @@ constexpr float MAX_VALID_DISTANCE_FT    = 40.0f;
 constexpr float MAX_DRIVE_SPEED = 0.30f;
 constexpr float MIN_DRIVE_SPEED = 0.12f;
 constexpr float FULL_SPEED_DISTANCE_FT = 18.0f;
-constexpr float DRIVE_ACCEL_RATE = 0.40f;
+constexpr float DRIVE_ACCEL_RATE = 0.25f; // Gentler drive speed ramp (PWM fraction/second)
 constexpr float DRIVE_DECEL_RATE = 0.70f;
 
 // IMU pitch stabilization. Enable only after verifying correction direction
@@ -110,7 +108,7 @@ constexpr float SWING_SLEW_RATE_DEG_PER_SEC = 35.0f;
 // Closed-loop lateral body tilt control using the pendulum servos.
 // Body coordinates: imuPitch = forward/back; imuRoll = left/right.
 // Keep false until servo correction polarity is verified while supported.
-constexpr bool ENABLE_PENDULUM_STABILIZATION = false;
+constexpr bool ENABLE_PENDULUM_STABILIZATION = true;
 constexpr float PENDULUM_TILT_ZERO_DEG = 0.0f;
 // Target body lean in ARC: signed beacon angle * gain, limited to safe lean.
 constexpr float ARC_BODY_LEAN_DEG_PER_TARGET_DEG = 0.08f;
@@ -158,13 +156,13 @@ constexpr float HEAD_MIN_DEG = 65.0f;
 constexpr float HEAD_MAX_DEG = 125.0f;
 constexpr float HEAD_FB_OFFSET_DEG = 8.0f;
 constexpr float HEAD_STS_OFFSET_DEG = -10.0f;
-constexpr float HEAD_EMA_ALPHA = 0.90f;
+constexpr float HEAD_EMA_ALPHA = 0.98f; // Favor the latest tilt reading for quicker leveling
 
 // Startup safety: do not immediately command the head to the IMU angle.
 // Wait briefly, then ramp the commanded head angles toward level at a
 // bounded speed. This prevents a sudden snap when the Teensy powers up.
 constexpr uint32_t HEAD_STARTUP_HOLD_MS = 5000;
-constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 180.0f;
+constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 360.0f; // Applies during all head leveling
 
 constexpr float HEAD_PITCH_DIRECTION = -1.0f; // Head servo direction independent of IMU coordinates
 constexpr float HEAD_ROLL_DIRECTION  = 1.0f;
@@ -202,7 +200,6 @@ enum NavState {
   STRAIGHT,
   ARC,
   PIVOT,
-  MANUAL,
   INVALID_TARGET,
   COMMS_LOST
 };
@@ -211,8 +208,7 @@ NavState navState = STARTUP;
 
 bool following = false;
 bool pivoting = false;
-bool systemEnabled = false;
-bool piPermissionWasHigh = false;
+bool systemEnabled = true;
 
 bool haveFilteredTarget = false;
 float filteredDistance = 0.0f;
@@ -240,10 +236,6 @@ float pendulumIntegral = 0.0f;
 float previousPendulumTargetDeg = 0.0f;
 bool pendulumWasActive = false;
 float currentPivot = 0.0f;
-bool manualMode = false;
-float manualDrive = 0.0f;
-float manualSwing = 0.0f;
-
 
 uint32_t lastPacketMs = 0;
 uint32_t lastControlUs = 0;
@@ -284,7 +276,6 @@ const char* stateName(NavState s) {
     case STRAIGHT: return "STRAIGHT";
     case ARC: return "ARC";
     case PIVOT: return "PIVOT";
-    case MANUAL: return "MANUAL";
     case INVALID_TARGET: return "INVALID";
     case COMMS_LOST: return "COMMS_LOST";
     default: return "UNKNOWN";
@@ -297,7 +288,6 @@ const char* stateName(NavState s) {
 // ============================================================
 
 void setPhaseEnableMotor(uint8_t phasePin, uint8_t pwmPin, float command) {
-  if (digitalRead(PI_ENABLE_PIN) != HIGH || !systemEnabled) command = 0.0f;
   command = clampf(command, -1.0f, 1.0f);
 
   if (fabsf(command) < 0.001f) {
@@ -336,7 +326,6 @@ uint16_t servoPulseFromDegrees(float degrees) {
 }
 
 void setServoDegrees(uint8_t channel, float degrees) {
-  if (digitalRead(PI_ENABLE_PIN) != HIGH || !systemEnabled) return;
   pca.setPWM(channel, 0, servoPulseFromDegrees(degrees));
 }
 
@@ -430,8 +419,8 @@ void enableSystem() {
   currentPivot = 0.0f;
   drive(0.0f);
   steer(0.0f);
-  systemEnabled = true;
   setSwing(SWING_CENTER_DEG);
+  systemEnabled = true;
 }
 
 void disableSystem() {
@@ -448,7 +437,6 @@ void disableSystem() {
   pendulumIntegral = 0.0f;
   pendulumWasActive = false;
   systemEnabled = false;
-  for (uint8_t ch = 0; ch < 16; ++ch) pca.setPWM(ch, 0, 0);
 }
 
 void emergencyStop(NavState reason) {
@@ -629,37 +617,6 @@ void filterTarget(float distance, float angle) {
 // ============================================================
 
 void handleCommand(char *line) {
-  // Ignore all motion and PAUSE commands while the Pi has not authorized us.
-  if (digitalRead(PI_ENABLE_PIN) != HIGH && strcmp(line, "STOP") != 0 && strcmp(line, "PING") != 0) return;
-  // Manual packet: M,signed_drive,signed_swing, both normalized -1..1.
-  if (line[0] == 'M' && line[1] == ',') {
-    char *separator = strchr(line + 2, ',');
-    if (!separator) return;
-    *separator = '\0';
-    char *endDrive = nullptr;
-    char *endSwing = nullptr;
-    float d = strtof(line + 2, &endDrive);
-    float w = strtof(separator + 1, &endSwing);
-    if (endDrive == line + 2 || *endDrive != '\0' ||
-        endSwing == separator + 1 || *endSwing != '\0' ||
-        !isfinite(d) || !isfinite(w) ||
-        fabsf(d) > 1.0f || fabsf(w) > 1.0f) {
-      emergencyStop(INVALID_TARGET);
-      disableSystem();
-      manualMode = false;
-      return;
-    }
-    if (!manualMode) {
-      emergencyStop(WAITING_FOR_PI);
-      resetTargetFilter();
-      manualMode = true;
-    }
-    manualDrive = d;
-    manualSwing = w;
-    lastPacketMs = millis();
-    if (!systemEnabled) enableSystem();
-    return;
-  }
   // Target packet: T,distance_ft,angle_deg
   if (line[0] == 'T' && line[1] == ',') {
     char *p1 = strchr(line + 2, ',');
@@ -676,11 +633,6 @@ void handleCommand(char *line) {
       return;
     }
 
-    if (manualMode) {
-      emergencyStop(WAITING_FOR_PI);
-      resetTargetFilter();
-      manualMode = false;
-    }
     filterTarget(distance, angle);
     lastPacketMs = millis();
 
@@ -693,7 +645,6 @@ void handleCommand(char *line) {
   // Pause movement without changing Pi-controlled relays.
   if (strcmp(line, "PAUSE") == 0) {
       emergencyStop(WAITING_FOR_PI);
-      manualMode = false;
 
       // Throw away the old target so BB-8 cannot resume
       // toward stale beacon data.
@@ -715,7 +666,6 @@ void handleCommand(char *line) {
     emergencyStop(WAITING_FOR_PI);
     disableSystem();
     resetTargetFilter();
-    manualMode = false;
     return;
   }
 
@@ -925,16 +875,6 @@ void controlledStop(float dt) {
 
 void navigationUpdate(float dt) {
   targetBodyTiltDeg = 0.0f;
-  if (manualMode) {
-    navState = MANUAL;
-    following = false;
-    pivoting = false;
-    currentPivot = 0.0f;
-    steer(0.0f);
-    commandDrive(manualDrive * MAX_DRIVE_SPEED, dt);
-    commandSwing(SWING_CENTER_DEG + manualSwing * MAX_SWING_OFFSET_DEG, dt);
-    return;
-  }
   if (!haveFilteredTarget) {
     controlledStop(dt);
     navState = WAITING_FOR_PI;
@@ -1103,9 +1043,6 @@ void sendStatus() {
 
   Serial.print(" Balance=");
   Serial.print(smoothedBalanceCorrection, 4);
-
-  Serial.print(" Enable=");
-  Serial.print(digitalRead(PI_ENABLE_PIN));
   Serial.println();
 }
 
@@ -1123,7 +1060,6 @@ void setup() {
   pinMode(DRIVE2_PWM_PIN, OUTPUT);
   pinMode(PIVOT_PHASE_PIN, OUTPUT);
   pinMode(PIVOT_PWM_PIN, OUTPUT);
-  pinMode(PI_ENABLE_PIN, INPUT); // external 10k pull-down holds LOW if Pi is off
 
 
   // SAFETY: motor PWM starts at zero; Pi owns the physical relays.
@@ -1135,8 +1071,7 @@ void setup() {
 
   pca.begin();
   pca.setPWMFreq(50);
-  // Disable ALL PCA9685 outputs until the Pi authorizes and a valid target arrives.
-  for (uint8_t ch = 0; ch < 16; ++ch) pca.setPWM(ch, 0, 0);
+  setSwing(SWING_CENTER_DEG);
   centerHead();
 
   // Start the head startup safety timer after its initial center command.
@@ -1165,26 +1100,6 @@ void setup() {
 // ============================================================
 
 void loop() {
-  const bool permission = digitalRead(PI_ENABLE_PIN) == HIGH;
-  if (!permission) {
-    if (piPermissionWasHigh || systemEnabled) {
-      // Disable motor PWM and servo pulses immediately on permission loss.
-      disableSystem();
-      resetTargetFilter();
-      manualMode = false;
-      for (uint8_t ch = 0; ch < 16; ++ch) pca.setPWM(ch, 0, 0);
-      lastPacketMs = 0;
-      navState = WAITING_FOR_PI;
-    }
-    piPermissionWasHigh = false;
-  } else if (!piPermissionWasHigh) {
-    // Require a NEW target packet after permission returns.
-    resetTargetFilter();
-    lastPacketMs = 0;
-    headStartupMs = millis();
-    lastHeadUpdateMs = headStartupMs;
-    piPermissionWasHigh = true;
-  }
   readPiSerial();
   updateIMU();
 
@@ -1196,7 +1111,6 @@ void loop() {
     emergencyStop(COMMS_LOST);
     disableSystem();
     resetTargetFilter();
-    manualMode = false;
   }
 
   uint32_t nowUs = micros();
@@ -1217,8 +1131,9 @@ void loop() {
       navigationUpdate(dt);
     }
 
-    // Head servo outputs are permitted only after a fresh target has armed navigation.
-    if (permission && systemEnabled) updateHeadLeveling();
+    // Keep the head level from the latest BNO085 pitch/roll reading.
+    // This is independent of the navigation state.
+    updateHeadLeveling();
   }
 
   if ((uint32_t)(nowMs - lastStatusMs) >= STATUS_PERIOD_MS) {

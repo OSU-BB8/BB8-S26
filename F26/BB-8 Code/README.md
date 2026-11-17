@@ -1,11 +1,26 @@
-# BB-8 integrated mode control v2 (bench-test release)
+# BB-8 integrated mode control (bench-test release)
+
+## Current body / PS5 setup
+
+- Deploy the files inside `Body Code` together on Body Pi, with that folder's `config.json` beside `bb8_body.py`. Deploy `Head Code` files on Head Pi; the laptop remote uses the root `config.json`. Keep token and IP/port settings consistent in all three configs. Each program reads its own adjacent config.
+- Body supervisor owns **BCM GPIO20** (relay) and **BCM GPIO21** (Teensy permission). Connect GPIO21 (Pi physical pin 40) to Teensy **pin 8**, share GND, and install the external **10 kOhm pull-down** from Teensy pin 8 to GND. This signal is 3.3 V logic. Keep GPIO20 dedicated to the relay; GPIO21 is the movement enable, not a second relay output.
+- Use the current `Body Code/BB8_Teensy_Controller/BB8_Teensy_Controller.ino`. Its serial link is 115200 baud on Teensy Serial1 (RX 0, TX 1) and Body `/dev/serial0`. Verify Pi UART is enabled and its serial login console is disabled. BCM14/TX goes to Teensy RX0; BCM15/RX to Teensy TX1.
+- All supplied configs default to `allow_shutdown=false` for bench testing. ESTOP still latches and stops the supervisor; restart it explicitly to clear the latch. Enable shutdown on **both** Pis only when intended. For each service account, authorize only `/usr/bin/systemctl poweroff` via passwordless sudo (for example `bb8 ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff`, with the actual account name on that Pi).
+- `bb8-body.service` disables the console with `BB8_DEBUG_CONSOLE=0`, while manual runs retain the `debug_console` config setting. Update its `User`, `WorkingDirectory`, and `ExecStart` to your actual installation. Re-copy the service and run `sudo systemctl daemon-reload` after changing it.
+- Start Body with `python3 bb8_body.py`, then enter `ps5` or select PS5 using the remote. Run only the supervisor; it starts the controller child and provides its relay socket. A standalone PS5 script cannot enable relays without the supervisor.
+- **PS5 controls:** left stick selects a virtual target (full stick = 20 ft). Triangle toggles manual mode: left Y drives forward/reverse, right Y controls swing. Center the relevant sticks to rearm after startup, a mode change, X, or lost Teensy status. X stops while held; PS stops the PS5 mode and exits. Use remote `estop` for the system E-stop. Verify axis/button mappings with motor power disconnected: SDL mappings may vary with Bluetooth/USB and OS.
+- Manual commands are `M,drive,swing`, normalized to -1..1; target commands are `T,distance_ft,angle_deg`. Both send at 20 Hz while armed. A healthy Teensy status (`S=` or `S,`) is required to enable relays. Relay closure is followed by another input/status sample before motion.
+- START/STOP/ESTOP transitions execute in order on the main thread. STOP and ESTOP immediately lower GPIO21 and GPIO20, cancel stale starts, and then reap children. UDP STATUS and heartbeats continue during startup and child termination. SIGTERM/SIGINT use the same output-off cleanup.
+- Run hardware-free checks from this directory: `python -B -m unittest discover -s tests -v`. Before live motion, test with motor power disconnected: STATUS, PS5 neutral/target/manual, X, PS, controller disconnect, STOP, ESTOP, and service stop. Confirm GPIO20/GPIO21 go inactive, then verify physical polarity, servo direction, and shutdown permissions on the actual Pis.
+
+The sections below include earlier release notes; the current setup above supersedes their GPIO ownership and firmware descriptions.
 
 ## Files
 - Body: `bb8_body.py`, `BB8_Relays.py`, `PS5_Controller.py`, `Beacon_Target_Control.py`
 - Head: `bb8_head.py`, `BB8_Beacon_Sender.py`
-- Teensy: `BB8_Teensy_Controller.ino` (unchanged firmware)
+- Teensy: `Body Code/BB8_Teensy_Controller/BB8_Teensy_Controller.ino`
 - `bb8_remote_debug.py`: UDP command emulator
-- AprilTag is intentionally a placeholder.
+- AprilTag mode uses the Head Pi detector described below.
 
 ## Setup
 1. **Motors disconnected for first tests.** Disable old `bb8.service` and any legacy scripts/services, so only one process owns `/dev/serial0`, UDP 5005, or GPIO20.
@@ -20,12 +35,12 @@
 10. `allow_shutdown=false` by default. Only set true after successful ESTOP dry-run, and verify service user has poweroff authorization.
 
 ## Important limitations / safety
-- Existing child programs own Teensy UART and GPIO20 while running; supervisor owns GPIO20 only in IDLE. This avoids simultaneous GPIO/serial access but means supervisor cannot independently force GPIO off if a child is hung until it terminates. Add an independent hardware watchdog/interlock before field use.
+- Mode children own Teensy UART while running; the supervisor exclusively owns GPIO20/GPIO21 and drops both before waiting for a child to terminate. Add an independent hardware watchdog/interlock before field use.
 - Wi-Fi E-stop is **not safety-rated**; use a hardwired normally-closed motor-power E-stop. UDP may be lost or spoofed; shared token is basic filtering, not encryption/authentication.
 - PS5 mode requires a DualSense connected directly to Body Pi over Bluetooth, as in the uploaded script. The future Wi-Fi remote selects the mode; it does not replace the PS5 joystick.
 - Debug terminal bypasses remote heartbeat intentionally. `remote_required` defaults false. The included remote emulator sends discrete commands, not periodic heartbeats; do not enable remote_required until real remote heartbeat is implemented.
 - Head supervisor heartbeat is monitored in beacon mode. No end-to-end acknowledged startup or shutdown, and no guaranteed head shutdown if Wi-Fi fails. A physical power disconnect remains essential.
-- `BB8_Teensy_Controller.ino` unchanged. Firmware has STOP and a watchdog; it does not implement a separate safety-rated ARM acknowledgment.
+- Teensy firmware requires the Pi permission signal and fresh serial commands. Firmware STOP, watchdog, and GPIO permission are not safety-rated controls.
 - Do not run `bb8_body.py` via systemd with debug_console true; use remote emulator from a second machine, or direct terminal mode with service stopped.
 
 

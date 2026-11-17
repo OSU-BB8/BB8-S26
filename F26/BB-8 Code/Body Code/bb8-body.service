@@ -7,6 +7,9 @@ Type=simple
 User=bb8
 WorkingDirectory=/home/bb8/bb8-control
 ExecStart=/usr/bin/python3 /home/bb8/bb8-control/bb8_body.py
+Environment=BB8_DEBUG_CONSOLE=0
+KillMode=mixed
+TimeoutStopSec=15
 Restart=on-failure
 RestartSec=2
 [Install]
