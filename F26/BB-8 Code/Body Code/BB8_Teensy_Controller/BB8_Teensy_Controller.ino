@@ -112,16 +112,16 @@ constexpr bool ENABLE_PENDULUM_STABILIZATION = true;
 constexpr float PENDULUM_TILT_ZERO_DEG = 0.0f;
 // Target body lean in ARC: signed beacon angle * gain, limited to safe lean.
 constexpr float ARC_BODY_LEAN_DEG_PER_TARGET_DEG = 0.08f;
-constexpr float MAX_ARC_BODY_LEAN_DEG = 5.0f;
+constexpr float MAX_ARC_BODY_LEAN_DEG = 20.0f;
 constexpr float ARC_LEAN_DIRECTION = 1.0f; // Verify inside-of-turn direction
 constexpr float BODY_TILT_TARGET_SLEW_DEG_PER_SEC = 90.0f;
 // PD output is a servo-angle offset, NOT a motor PWM command.
 constexpr float PENDULUM_KP = 0.10f; // servo deg / body tilt deg
-constexpr float PENDULUM_KD = 0.20f; // servo deg / (body tilt deg/s)
-constexpr float PENDULUM_KI = 0.14f; // servo deg / (body tilt deg * second)
+constexpr float PENDULUM_KD = 0.00f; //0.20f; // servo deg / (body tilt deg/s)
+constexpr float PENDULUM_KI = 0.00f; //0.14f; // servo deg / (body tilt deg * second)
 constexpr float PENDULUM_INTEGRAL_LIMIT = 100.0f; // deg * seconds
 constexpr float PENDULUM_INTEGRAL_RESET_TARGET_CHANGE_DEG = 1.0f;
-constexpr float PENDULUM_CORRECTION_DIRECTION = -1.0f; // verify physical sign
+constexpr float PENDULUM_CORRECTION_DIRECTION = 1.0f; // verify physical sign
 constexpr float PENDULUM_MAX_CORRECTION_DEG = 4.0f;
 constexpr float PENDULUM_TILT_RATE_FILTER_ALPHA = 0.45f;
 constexpr float PENDULUM_MAX_VALID_TILT_DEG = 30.0f;

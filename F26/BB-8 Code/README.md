@@ -1,5 +1,66 @@
 # BB-8 integrated mode control (bench-test release)
 
+## Beacon dashboard on your computer
+
+The dashboard runs on **Head Pi** and opens in a computer's web browser on BB-8 Wi-Fi.
+It shows BB-8 at the origin (forward is up), the relative beacon position, a 4-foot
+stopping circle, and an estimated approach path. It is read-only and does not need
+an SSH graphical desktop, internet access, or additional Python packages.
+
+Copy the updated `Head Code/BB8_Beacon_Sender.py`, `beacon_dashboard.py`,
+`beacon_dashboard.html`, and `bb8-dashboard.service` into `/home/bb8/bb8-control`
+on **Head Pi**. Keep the dashboard Python and HTML files together. Install with:
+
+```bash
+cd /home/bb8/bb8-control
+sudo cp bb8-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bb8-dashboard.service
+```
+
+If your installation uses a different user or directory, edit the service first.
+Stop and reselect BEACON mode after replacing the sender so the updated sender
+starts. Open **http://10.42.0.1:8090** on your computer (substitute Head Pi's actual
+Wi-Fi address). Select BEACON using the existing remote to see live UWB data.
+The dashboard is independent of the mode supervisor and can remain open while
+modes are stopped. Waiting for telemetry is normal outside BEACON mode.
+
+Alternatively, forward the dashboard through SSH from your computer:
+
+```bash
+ssh -N -L 8090:127.0.0.1:8090 bb8@10.42.0.1
+```
+
+Keep that SSH session open and visit **http://localhost:8090** in your computer's
+browser. If port 8090 is already occupied on the computer, use
+`-L 8091:127.0.0.1:8090` and visit `http://localhost:8091`.
+The dashboard uses 8090 so the team's camera feed can keep using 8080.
+For a foreground test on Head Pi, stop the dashboard service and run
+`python3 beacon_dashboard.py`. For SSH-only HTTP access run it with
+`--host 127.0.0.1` (or add that argument to the service's ExecStart).
+
+The sender copies its existing nine-field display telemetry to local UDP 5006;
+the optional direct laptop UDP destination remains supported. No Body Pi, Teensy,
+or control-protocol changes are required. The HTTP server serves only the page
+and `/api/telemetry`, never config files or remote controls.
+
+**How to read the path:** the current Teensy is a reactive controller, with no
+stored route or odometry feed. The dashed line is a geometric estimate using its
+straight/arc/pivot thresholds; it is not an exact trajectory or proof that motion
+is enabled. The arc is illustrative, not calibrated to the robot's turning radius.
+The endpoint touches the 4-foot stopping circle; the physical robot may overshoot.
+Following starts at 5 feet, so the 4–5-foot band depends on prior following state.
+The preview cannot infer latched pivot/following state. If firmware thresholds
+change, update `route_preview()` and the UI's circle/start threshold as well.
+Range and bearing come from Head Pi's filtered beacon measurements, not a world map.
+GOOD packets show a route; HOLD packets retain a faded beacon but hide the route.
+No packet for 0.75 seconds marks the position stale and hides the route. This
+freshness measures display packet arrival; upstream filtering/hold adds latency.
+
+Diagnostics: `sudo journalctl -u bb8-dashboard.service -f`. Test the dashboard
+without hardware from this directory:
+`python3 -B -m unittest discover -s tests -p 'test_beacon_dashboard.py' -v`.
+
 ## Current body / PS5 setup
 
 - Deploy the files inside `Body Code` together on Body Pi, with that folder's `config.json` beside `bb8_body.py`. Deploy `Head Code` files on Head Pi; the laptop remote uses the root `config.json`. Keep token and IP/port settings consistent in all three configs. Each program reads its own adjacent config.

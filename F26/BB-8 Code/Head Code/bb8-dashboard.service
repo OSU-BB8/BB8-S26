@@ -1,0 +1,15 @@
+[Unit]
+Description=BB-8 Beacon Dashboard (read only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bb8camera
+WorkingDirectory=/home/bb8camera/Controler_Test
+ExecStart=/usr/bin/python3 /home/bb8camera/Controler_test/beacon_dashboard.py --port 8090
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

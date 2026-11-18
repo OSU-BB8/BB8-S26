@@ -25,6 +25,8 @@ UDP_PORT = 5005
 # Set this to the Windows PC IPv4 address on the BB-8 Wi-Fi network.
 DISPLAY_IP = "10.42.0.185"
 DISPLAY_PORT = 5006
+# Local read-only dashboard; independent of the optional laptop UDP display.
+DASHBOARD_ADDRESS = ("127.0.0.1", 5006)
 
 # Unit conversion
 CM_TO_FT = 0.0328084
@@ -751,6 +753,11 @@ try:
                         f"{raw_angle_count},"
                         f"{state}"
                     )
+
+                    try:
+                        sock.sendto(display_message.encode("ascii"), DASHBOARD_ADDRESS)
+                    except OSError as exc:
+                        print(f"DASHBOARD SEND ERROR -> {exc}")
 
                     try:
                         sock.sendto(
