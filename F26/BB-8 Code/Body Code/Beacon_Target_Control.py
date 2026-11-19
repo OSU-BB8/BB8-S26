@@ -10,6 +10,14 @@ import threading
 import time
 import serial
 from BB8_Relays import BB8Relays
+try:
+    from bb8_mirror_tx import MirrorTX
+except ModuleNotFoundError as exc:
+    if exc.name != "bb8_mirror_tx":
+        raise
+    MirrorTX = None
+    print("[MIRROR] Optional bb8_mirror_tx.py missing; test-stand mirroring disabled.", flush=True)
+MIRROR = MirrorTX(__import__("os").environ.get("BB8_MODE", "BEACON")) if MirrorTX is not None else None
 
 UDP_PORT = 5005
 HEAD_TIMEOUT = 0.5
@@ -33,11 +41,15 @@ class TeensyLink:
     def send_target(self, distance, angle):
         with self.write_lock:
             self.ser.write(f'T,{distance:.3f},{angle:.3f}\n'.encode('ascii'))
+            if MIRROR is not None:
+                MIRROR.send(distance, angle)
 
     def send_stop(self):
         with self.write_lock:
             self.ser.write(b'STOP\n')
             self.ser.flush()
+            if MIRROR is not None:
+                MIRROR.send(stop=True)
 
     def status_recent(self):
         t = self.last_status_at

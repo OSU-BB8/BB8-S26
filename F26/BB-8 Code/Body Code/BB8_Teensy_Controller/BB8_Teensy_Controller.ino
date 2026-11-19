@@ -1,7 +1,7 @@
 /*
   EXPERIMENTAL PENDULUM FEEDBACK VERSION
   Derived from BB8_Teensy_Controller_RollBalance.ino.
-  ENABLE_PENDULUM_STABILIZATION defaults to false for direction verification.
+  Verify ENABLE_PENDULUM_STABILIZATION below before powered testing.
   Physical lean axes and servo polarity MUST be tested with robot supported.
 */
 /*
@@ -42,71 +42,79 @@ constexpr uint8_t PIVOT_PWM_PIN     = 6;
 // Relays are now driven by Body Pi GPIO20/GPIO21, not the Teensy.
 
 // PCA9685
-constexpr uint8_t PCA_ADDRESS = 0x40;
-constexpr uint8_t SWING1_CH = 0;
-constexpr uint8_t SWING2_CH = 4;
+constexpr uint8_t SERVO_DRIVER_I2C_ADDRESS = 0x40;
+constexpr uint8_t PENDULUM_SERVO_1_CHANNEL = 0;
+constexpr uint8_t PENDULUM_SERVO_2_CHANNEL = 4;
 
 // Head servos (same PCA9685 channels as the original Pi controller)
-constexpr uint8_t HEAD_FB_CH  = 1;  // head forward/back
-constexpr uint8_t HEAD_STS_CH = 2;  // head side-to-side
+constexpr uint8_t HEAD_FORWARD_BACK_CHANNEL  = 1;  // head forward/back
+constexpr uint8_t HEAD_SIDE_TO_SIDE_CHANNEL = 2;  // head side-to-side
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
+// Serial link speeds (bits per second).
 constexpr uint32_t PI_BAUD = 115200;
 constexpr uint32_t USB_BAUD = 115200;
+constexpr uint8_t IMU_I2C_ADDRESSES[] = {0x4A, 0x4B};
+constexpr uint32_t IMU_INIT_RETRY_MS = 2000;
 
+// Following distance thresholds (feet); separate start/stop values prevent chatter.
 constexpr float FOLLOW_START_DISTANCE_FT = 5.0f;
 constexpr float FOLLOW_STOP_DISTANCE_FT  = 4.0f;
 constexpr float HARD_MIN_DISTANCE_FT     = 3.0f;
 constexpr float MAX_VALID_DISTANCE_FT    = 40.0f;
 
-constexpr float MAX_DRIVE_SPEED = 0.30f;
-constexpr float MIN_DRIVE_SPEED = 0.12f;
+// Drive commands are signed PWM fractions, not measured wheel speeds.
+constexpr float MAX_DRIVE_COMMAND = 0.30f;
+constexpr float MIN_DRIVE_COMMAND = 0.12f;
 constexpr float FULL_SPEED_DISTANCE_FT = 18.0f;
-constexpr float DRIVE_ACCEL_RATE = 0.25f; // Gentler drive speed ramp (PWM fraction/second)
-constexpr float DRIVE_DECEL_RATE = 0.70f;
+constexpr float DRIVE_ACCEL_COMMAND_PER_SEC = 0.25f; // Gentler drive speed ramp (PWM fraction/second)
+constexpr float DRIVE_DECEL_COMMAND_PER_SEC = 0.70f;
 
+// Forward/back rocking damping through the drive motors (body pitch).
 // IMU pitch stabilization. Enable only after verifying correction direction
 // with the robot securely supported and drive wheels clear of the ground.
 // SAFETY: Leave false until drive wheels are raised and feedback direction verified.
 // After successful testing, change to true to activate idle and moving damping.
 constexpr bool ENABLE_DRIVE_STABILIZATION = false;
-constexpr float BALANCE_DIRECTION = -1.0f; // Reverse to -1 if feedback reinforces rocking
+constexpr float BALANCE_DIRECTION = -1.0f; // Correction polarity; reverse sign if feedback reinforces rocking
 constexpr float BALANCE_PITCH_ZERO_DEG = 0.0f; // Calibrate at physical rest
 constexpr float BALANCE_KP = 0.2f; // PWM fraction / degree
 constexpr float BALANCE_KD = 0.0015f; // PWM fraction / (degree/second)
-constexpr float BALANCE_MAX_STILL = 0.10f;
-constexpr float BALANCE_MAX_MOVING = 0.06f;
+constexpr float BALANCE_MAX_IDLE_CORRECTION = 0.10f;
+constexpr float BALANCE_MAX_MOVING_CORRECTION = 0.06f;
 constexpr float BALANCE_DEADBAND_DEG = 0.6f;
 constexpr float BALANCE_MAX_TILT_DEG = 20.0f;
 constexpr uint32_t BALANCE_IMU_TIMEOUT_MS = 100;
 constexpr float BALANCE_RATE_FILTER_ALPHA = 0.25f;
 // Additional output filtering prevents abrupt PWM changes due to IMU noise.
-constexpr float BALANCE_CORRECTION_SLEW_PER_SEC = 0.40f;
+constexpr float BALANCE_CORRECTION_COMMAND_PER_SEC = 0.40f;
 constexpr float BALANCE_MOVING_TILT_KP_SCALE = 0.45f;
 constexpr float BALANCE_MOVING_RATE_KD_SCALE = 1.0f;
 constexpr float BALANCE_IDLE_RATE_KD_SCALE = 1.0f;
-// Disable corrections near a large tilt; this is damping, not fall recovery.
+// Minimum pitch magnitude before the idle proportional term activates.
 constexpr float BALANCE_IDLE_ACTIVATION_DEG = 0.4f;
 
 
+// Navigation mode thresholds: target bearing in degrees and range in feet.
 constexpr float ANGLE_DEADBAND_DEG = 6.0f;
 constexpr float CLOSE_PIVOT_START_ANGLE_DEG = 30.0f;
 constexpr float PIVOT_STOP_ANGLE_DEG = 10.0f;
 constexpr float REAR_PIVOT_ANGLE_DEG = 65.0f;
 constexpr float CLOSE_NAV_DISTANCE_FT = 10.0f;
 
+// Pendulum feed-forward steering: servo angles and motion limits.
 constexpr float SWING_CENTER_DEG = 90.0f; // Calibrate mechanical center with feedback OFF
 constexpr float MAX_SWING_OFFSET_DEG = 14.0f;
-constexpr float SWING_KP = 0.35f;
+constexpr float SWING_SERVO_DEG_PER_TARGET_DEG = 0.35f;
 constexpr float SWING_DIRECTION = 1.0f;
 constexpr float MIN_SWING_OFFSET_DEG = 1.5f;
 constexpr float SWING_SLEW_RATE_DEG_PER_SEC = 35.0f;
 
 // Closed-loop lateral body tilt control using the pendulum servos.
-// Body coordinates: imuPitch = forward/back; imuRoll = left/right.
+// Body coordinates: bodyPitchDeg = forward/back; bodyRollDeg = left/right.
 // Keep false until servo correction polarity is verified while supported.
 constexpr bool ENABLE_PENDULUM_STABILIZATION = true;
 constexpr float PENDULUM_TILT_ZERO_DEG = 0.0f;
@@ -115,11 +123,11 @@ constexpr float ARC_BODY_LEAN_DEG_PER_TARGET_DEG = 0.08f;
 constexpr float MAX_ARC_BODY_LEAN_DEG = 20.0f;
 constexpr float ARC_LEAN_DIRECTION = 1.0f; // Verify inside-of-turn direction
 constexpr float BODY_TILT_TARGET_SLEW_DEG_PER_SEC = 90.0f;
-// PD output is a servo-angle offset, NOT a motor PWM command.
+// PID output is a servo-angle offset in degrees.
 constexpr float PENDULUM_KP = 0.10f; // servo deg / body tilt deg
-constexpr float PENDULUM_KD = 0.00f; //0.20f; // servo deg / (body tilt deg/s)
-constexpr float PENDULUM_KI = 0.00f; //0.14f; // servo deg / (body tilt deg * second)
-constexpr float PENDULUM_INTEGRAL_LIMIT = 100.0f; // deg * seconds
+constexpr float PENDULUM_KD = 0.00f; // servo deg / (body tilt deg/s)
+constexpr float PENDULUM_KI = 0.00f; // servo deg / (body tilt deg * second)
+constexpr float PENDULUM_INTEGRAL_LIMIT_DEG_SEC = 100.0f; // deg * seconds
 constexpr float PENDULUM_INTEGRAL_RESET_TARGET_CHANGE_DEG = 1.0f;
 constexpr float PENDULUM_CORRECTION_DIRECTION = 1.0f; // verify physical sign
 constexpr float PENDULUM_MAX_CORRECTION_DEG = 4.0f;
@@ -128,20 +136,23 @@ constexpr float PENDULUM_MAX_VALID_TILT_DEG = 30.0f;
 constexpr uint32_t PENDULUM_IMU_TIMEOUT_MS = 100;
 
 
-constexpr float PIVOT_KP = 0.022f;
-constexpr float MIN_PIVOT_COMMAND = 0.10f;
+// Reaction-wheel pivot: full-command kick, gradual rundown, then zero-command rest.
+// These are PWM commands; without an encoder they do not measure wheel speed.
 constexpr float MAX_PIVOT_COMMAND = 1.0f;
 constexpr float PIVOT_DIRECTION = -1.0f;
+constexpr uint32_t PIVOT_KICK_DURATION_MS = 150;
+constexpr uint32_t PIVOT_RAMP_DOWN_MS = 300;
+constexpr uint32_t PIVOT_REST_DURATION_MS = 200;
 
-constexpr float DISTANCE_FILTER_ALPHA = 0.25f;
-constexpr float ANGLE_FILTER_ALPHA = 0.30f;
+// Target smoothing: 0 favors history; 1 uses only the newest sample.
+constexpr float DISTANCE_FILTER_ALPHA = 0.35f;
+constexpr float ANGLE_FILTER_ALPHA = 0.40f;
 
+// Communication watchdog and periodic task intervals (units in names).
 constexpr uint32_t PI_TIMEOUT_MS = 500;
 constexpr uint32_t CONTROL_PERIOD_US = 20000; // 50 Hz
 constexpr uint32_t STATUS_PERIOD_MS = 250;
 
-// Time allowed for the physical relay contacts to close before any motor
-// command is applied. The first received target is retained during this wait.
 // Relay contact settling is handled by the Body Pi before sending targets.
 
 // Servo calibration.
@@ -154,41 +165,25 @@ constexpr uint16_t SERVO_MAX_US = 2500;
 constexpr float HEAD_CENTER_DEG = 90.0f;
 constexpr float HEAD_MIN_DEG = 65.0f;
 constexpr float HEAD_MAX_DEG = 125.0f;
-constexpr float HEAD_FB_OFFSET_DEG = 8.0f;
-constexpr float HEAD_STS_OFFSET_DEG = -10.0f;
-constexpr float HEAD_EMA_ALPHA = 0.98f; // Favor the latest tilt reading for quicker leveling
+constexpr float HEAD_FORWARD_BACK_OFFSET_DEG = 8.0f;
+constexpr float HEAD_SIDE_TO_SIDE_OFFSET_DEG = -10.0f;
+constexpr float HEAD_TARGET_FILTER_TIME_SEC = 0.10f; // Half the filter delay for twice-as-fast leveling
+constexpr float HEAD_LEVELING_DEADBAND_DEG = 0.3f; // Ignore small errors that cause servo hunting
+constexpr float HEAD_LEVELING_RESPONSE_PER_SEC = 8.0f; // Twice the damped response rate
+constexpr float HEAD_LEVELING_ACCEL_DEG_PER_SEC2 = 160.0f; // 4x acceleration preserves the profile at 2x speed
+constexpr uint32_t HEAD_IMU_TIMEOUT_MS = 500; // Neck tolerates short gaps independently of drive damping
 
 // Startup safety: do not immediately command the head to the IMU angle.
 // Wait briefly, then ramp the commanded head angles toward level at a
 // bounded speed. This prevents a sudden snap when the Teensy powers up.
 constexpr uint32_t HEAD_STARTUP_HOLD_MS = 5000;
-constexpr float HEAD_STARTUP_SLEW_DEG_PER_SEC = 360.0f; // Applies during all head leveling
+constexpr float HEAD_LEVELING_SLEW_DEG_PER_SEC = 40.0f; // Twice the previous loaded-neck speed limit
 
 constexpr float HEAD_PITCH_DIRECTION = -1.0f; // Head servo direction independent of IMU coordinates
 constexpr float HEAD_ROLL_DIRECTION  = 1.0f;
 
 // ============================================================
-// HARDWARE OBJECTS
-// ============================================================
-
-Adafruit_PWMServoDriver pca(PCA_ADDRESS);
-Adafruit_BNO08x bno08x(-1);
-sh2_SensorValue_t sensorValue;
-
-bool imuOK = true;
-float imuPitch = 0.0f;
-float imuRoll = 0.0f;
-float imuYaw = 0.0f;
-
-// Smoothed head commands.
-float headFBCommand = HEAD_CENTER_DEG;
-float headSTSCommand = HEAD_CENTER_DEG;
-bool headFilterInitialized = false;
-uint32_t headStartupMs = 0;
-uint32_t lastHeadUpdateMs = 0;
-
-// ============================================================
-// CONTROLLER STATE
+// HARDWARE INTERFACES AND RUNTIME STATE
 // ============================================================
 
 enum NavState {
@@ -204,45 +199,90 @@ enum NavState {
   COMMS_LOST
 };
 
-NavState navState = STARTUP;
+// Hardware interfaces.
+Adafruit_PWMServoDriver servoDriver(SERVO_DRIVER_I2C_ADDRESS);
+Adafruit_BNO08x bodyImu(-1);
+sh2_SensorValue_t imuSensorEvent;
 
-bool following = false;
-bool pivoting = false;
-bool systemEnabled = true;
+// Body orientation in degrees: pitch = forward/back, roll = left/right.
+bool imuAvailable = false;
+uint32_t lastImuInitAttemptMs = 0;
+float bodyPitchDeg = 0.0f;
+float bodyRollDeg = 0.0f;
+float bodyYawDeg = 0.0f;
 
-bool haveFilteredTarget = false;
-float filteredDistance = 0.0f;
-float filteredAngle = 0.0f;
+// Navigation mode and following hysteresis; Pi owns physical relays.
+NavState navigationState = STARTUP;
+bool isFollowingTarget = false;
+bool isPivoting = false;
+bool navigationEnabled = true;
 
-float currentDrive = 0.0f;
-float actualDriveOutput = 0.0f;
-float smoothedBalanceCorrection = 0.0f;
-float filteredPitchRate = 0.0f;
-float lastBalancePitch = 0.0f;
-uint32_t lastBalanceImuMs = 0;
-uint32_t lastBalanceSampleUs = 0;
-bool balanceRateReady = true;
-bool balanceImuFresh = false;
-float currentSwing = SWING_CENTER_DEG;
-float targetBodyTiltDeg = 0.0f;
-float commandedBodyTiltDeg = 0.0f;
-float lateralTiltRateDegS = 0.0f;
-float lastLateralTiltDeg = 0.0f;
-uint32_t lastLateralTiltSampleUs = 0;
-uint32_t lastLateralTiltMs = 0;
-bool lateralTiltRateReady = false;
-float pendulumCorrectionDeg = 0.0f;
-float pendulumIntegral = 0.0f;
-float previousPendulumTargetDeg = 0.0f;
-bool pendulumWasActive = false;
-float currentPivot = 0.0f;
+// Filtered beacon target: range in feet, signed bearing in degrees.
+bool targetFilterInitialized = false;
+float filteredTargetDistanceFt = 0.0f;
+float filteredTargetAngleDeg = 0.0f;
 
-uint32_t lastPacketMs = 0;
-uint32_t lastControlUs = 0;
-uint32_t lastStatusMs = 0;
+// Drive and pivot outputs: signed PWM fractions (-1 to +1).
+float rampedDriveCommand = 0.0f; // Navigation demand after acceleration/deceleration ramp
+float appliedDriveCommand = 0.0f; // Ramped demand plus pitch correction, clamped to drive limits
+float pivotMotorCommand = 0.0f;
 
-char rxBuffer[80];
-size_t rxIndex = 0;
+enum PivotPulsePhase { PIVOT_IDLE, PIVOT_KICK, PIVOT_RAMP_DOWN, PIVOT_REST };
+PivotPulsePhase pivotPulsePhase = PIVOT_IDLE;
+uint32_t pivotPhaseStartedMs = 0;
+float pivotPulseDirection = 0.0f;
+float pivotRampStartMagnitude = 0.0f;
+
+// Pitch damping: PWM correction, degrees/second rate, sample timestamps.
+float smoothedPitchCorrectionCommand = 0.0f;
+float filteredPitchRateDegPerSec = 0.0f;
+float previousPitchDeg = 0.0f;
+uint32_t lastPitchUpdateMs = 0;
+uint32_t lastPitchSampleUs = 0;
+bool pitchRateReady = true;
+bool hasPitchSample = false; // Freshness also requires checking lastPitchUpdateMs
+
+// Pendulum steering: servo position and body-roll targets in degrees.
+float pendulumServoCommandDeg = SWING_CENTER_DEG;
+float targetBodyRollDeg = 0.0f;
+float rampedBodyRollTargetDeg = 0.0f;
+
+// Roll feedback: degrees/second rate and IMU sample timestamps.
+float filteredRollRateDegPerSec = 0.0f;
+float previousRollDeg = 0.0f;
+uint32_t lastRollSampleUs = 0;
+uint32_t lastRollUpdateMs = 0;
+bool rollRateReady = false;
+
+// Pendulum PID memory: servo correction (deg), integral (deg * seconds).
+float pendulumFeedbackCorrectionDeg = 0.0f;
+float rollErrorIntegralDegSec = 0.0f;
+float previousBodyRollTargetDeg = 0.0f;
+bool pendulumFeedbackWasActive = false;
+
+// Head leveling: body pitch/roll commands in degrees, before output mapping.
+float headPitchCommandDeg = HEAD_CENTER_DEG;
+float headRollCommandDeg = HEAD_CENTER_DEG;
+float filteredHeadPitchTargetDeg = HEAD_CENTER_DEG;
+float filteredHeadRollTargetDeg = HEAD_CENTER_DEG;
+float headPitchVelocityDegPerSec = 0.0f;
+float headRollVelocityDegPerSec = 0.0f;
+bool headFilterInitialized = false;
+bool hasHeadOrientationSample = false;
+uint32_t lastHeadOrientationMs = 0;
+const char *headLevelingStatus = "STARTUP";
+uint32_t headStartupMs = 0;
+uint32_t lastHeadUpdateMs = 0;
+
+// Task timing: milliseconds (Ms) or microseconds (Us).
+uint32_t lastPiCommandMs = 0;
+uint32_t lastControlUpdateUs = 0;
+uint32_t lastStatusSentMs = 0;
+
+// Pi UART receive buffer: partial line and number of buffered characters.
+char piReceiveBuffer[80];
+size_t piReceiveLength = 0;
+bool piDiscardingLine = false;
 
 // ============================================================
 // HELPERS
@@ -305,7 +345,7 @@ void setPhaseEnableMotor(uint8_t phasePin, uint8_t pwmPin, float command) {
 }
 
 void drive(float command) {
-  command = clampf(command, -MAX_DRIVE_SPEED, MAX_DRIVE_SPEED);
+  command = clampf(command, -MAX_DRIVE_COMMAND, MAX_DRIVE_COMMAND);
   setPhaseEnableMotor(DRIVE1_PHASE_PIN, DRIVE1_PWM_PIN, -command);
   setPhaseEnableMotor(DRIVE2_PHASE_PIN, DRIVE2_PWM_PIN, -command);
 }
@@ -314,6 +354,72 @@ void steer(float command) {
   command = clampf(command, -1.0f, 1.0f);
   if (fabsf(command) < 0.01f) command = 0.0f;
   setPhaseEnableMotor(PIVOT_PHASE_PIN, PIVOT_PWM_PIN, command);
+}
+
+void stopPivotPulse() {
+  pivotPulsePhase = PIVOT_IDLE;
+  pivotPhaseStartedMs = 0;
+  pivotPulseDirection = 0.0f;
+  pivotRampStartMagnitude = 0.0f;
+  pivotMotorCommand = 0.0f;
+  steer(0.0f);
+}
+
+void commandPivotPulse(float targetAngleDeg) {
+  if (!navigationEnabled || !isfinite(targetAngleDeg) ||
+      fabsf(targetAngleDeg) <= PIVOT_STOP_ANGLE_DEG) {
+    stopPivotPulse();
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  const float requestedDirection = copysignf(1.0f, targetAngleDeg * PIVOT_DIRECTION);
+  if (pivotPulsePhase == PIVOT_IDLE) {
+    pivotPulseDirection = requestedDirection;
+    pivotPulsePhase = PIVOT_KICK;
+    pivotPhaseStartedMs = nowMs;
+  }
+
+  // A changed turn direction first runs the old pulse down and rests at zero.
+  // Never switch directly from a full-power kick to opposite motor polarity.
+  if (pivotPulsePhase == PIVOT_KICK &&
+      (requestedDirection != pivotPulseDirection ||
+       (uint32_t)(nowMs - pivotPhaseStartedMs) >= PIVOT_KICK_DURATION_MS)) {
+    pivotRampStartMagnitude = fabsf(pivotMotorCommand);
+    pivotPulsePhase = PIVOT_RAMP_DOWN;
+    pivotPhaseStartedMs = nowMs;
+  }
+
+  switch (pivotPulsePhase) {
+    case PIVOT_KICK:
+      pivotMotorCommand = pivotPulseDirection * MAX_PIVOT_COMMAND;
+      break;
+    case PIVOT_RAMP_DOWN: {
+      const uint32_t elapsedMs = (uint32_t)(nowMs - pivotPhaseStartedMs);
+      if (elapsedMs >= PIVOT_RAMP_DOWN_MS) {
+        pivotMotorCommand = 0.0f;
+        pivotPulsePhase = PIVOT_REST;
+        pivotPhaseStartedMs = nowMs;
+      } else {
+        pivotMotorCommand = pivotPulseDirection * pivotRampStartMagnitude *
+            (1.0f - (float)elapsedMs / (float)PIVOT_RAMP_DOWN_MS);
+      }
+      break;
+    }
+    case PIVOT_REST:
+      pivotMotorCommand = 0.0f;
+      if ((uint32_t)(nowMs - pivotPhaseStartedMs) >= PIVOT_REST_DURATION_MS) {
+        pivotPulseDirection = requestedDirection;
+        pivotPulsePhase = PIVOT_KICK;
+        pivotPhaseStartedMs = nowMs;
+        pivotMotorCommand = pivotPulseDirection * MAX_PIVOT_COMMAND;
+      }
+      break;
+    default:
+      stopPivotPulse();
+      return;
+  }
+  steer(pivotMotorCommand);
 }
 
 uint16_t servoPulseFromDegrees(float degrees) {
@@ -326,73 +432,121 @@ uint16_t servoPulseFromDegrees(float degrees) {
 }
 
 void setServoDegrees(uint8_t channel, float degrees) {
-  pca.setPWM(channel, 0, servoPulseFromDegrees(degrees));
+  servoDriver.setPWM(channel, 0, servoPulseFromDegrees(degrees));
 }
 
 void setHeadForwardBack(float degrees) {
   degrees = clampf(degrees, HEAD_MIN_DEG, HEAD_MAX_DEG);
-  setServoDegrees(HEAD_FB_CH, degrees + HEAD_FB_OFFSET_DEG);
+  setServoDegrees(HEAD_FORWARD_BACK_CHANNEL, degrees + HEAD_FORWARD_BACK_OFFSET_DEG);
 }
 
 void setHeadSideToSide(float degrees) {
   degrees = clampf(degrees, HEAD_MIN_DEG, HEAD_MAX_DEG);
-  setServoDegrees(HEAD_STS_CH, degrees + HEAD_STS_OFFSET_DEG);
+  setServoDegrees(HEAD_SIDE_TO_SIDE_CHANNEL, degrees + HEAD_SIDE_TO_SIDE_OFFSET_DEG);
 }
 
 void centerHead() {
-  headFBCommand = HEAD_CENTER_DEG;
-  headSTSCommand = HEAD_CENTER_DEG;
+  headPitchCommandDeg = HEAD_CENTER_DEG;
+  headRollCommandDeg = HEAD_CENTER_DEG;
+  filteredHeadPitchTargetDeg = HEAD_CENTER_DEG;
+  filteredHeadRollTargetDeg = HEAD_CENTER_DEG;
+  headPitchVelocityDegPerSec = 0.0f;
+  headRollVelocityDegPerSec = 0.0f;
   headFilterInitialized = false;
   setHeadForwardBack(HEAD_CENTER_DEG);
   setHeadSideToSide(HEAD_CENTER_DEG);
 }
 
-float slewToward(float current, float target, float maxStep) {
-  float error = target - current;
-  if (error > maxStep) return current + maxStep;
-  if (error < -maxStep) return current - maxStep;
-  return target;
+void smoothHeadAxis(float targetDeg, float &commandDeg,
+                    float &velocityDegPerSec, float dtSec) {
+  // A damped spring eases both position and velocity. Substeps keep the
+  // response stable if a control cycle runs late.
+  while (dtSec > 0.0f) {
+    const float stepSec = min(dtSec, 0.01f);
+    float errorDeg = targetDeg - commandDeg;
+    if (fabsf(errorDeg) <= HEAD_LEVELING_DEADBAND_DEG) {
+      errorDeg = 0.0f;
+    } else {
+      errorDeg -= copysignf(HEAD_LEVELING_DEADBAND_DEG, errorDeg);
+    }
+    const float response = HEAD_LEVELING_RESPONSE_PER_SEC;
+    float acceleration = response * response * errorDeg -
+                         2.0f * response * velocityDegPerSec;
+    acceleration = clampf(acceleration, -HEAD_LEVELING_ACCEL_DEG_PER_SEC2,
+                          HEAD_LEVELING_ACCEL_DEG_PER_SEC2);
+    velocityDegPerSec = clampf(velocityDegPerSec + acceleration * stepSec,
+        -HEAD_LEVELING_SLEW_DEG_PER_SEC, HEAD_LEVELING_SLEW_DEG_PER_SEC);
+    commandDeg += velocityDegPerSec * stepSec;
+    // Mechanical travel limits take precedence over the motion profile.
+    if (commandDeg < HEAD_MIN_DEG || commandDeg > HEAD_MAX_DEG) {
+      commandDeg = clampf(commandDeg, HEAD_MIN_DEG, HEAD_MAX_DEG);
+      velocityDegPerSec = 0.0f;
+    }
+    dtSec -= stepSec;
+  }
 }
 
 void updateHeadLeveling() {
-  if (!imuOK) return;
-
   uint32_t now = millis();
+  // Head freshness comes directly from valid orientation events, independent
+  // of the drive/pendulum derivative estimators. Report why leveling is held.
+  if (!imuAvailable) headLevelingStatus = "NO_IMU";
+  else if (!hasHeadOrientationSample) headLevelingStatus = "WAIT_IMU";
+  else if (!isfinite(bodyPitchDeg) || !isfinite(bodyRollDeg)) headLevelingStatus = "INVALID_IMU";
+  else if ((uint32_t)(now - lastHeadOrientationMs) > HEAD_IMU_TIMEOUT_MS)
+    headLevelingStatus = "STALE_IMU";
+  else headLevelingStatus = "LEVELING";
 
-  // Give the person powering up BB-8 time to move their hands away.
-  // During this hold the head remains at the startup command.
-  if ((uint32_t)(now - headStartupMs) < HEAD_STARTUP_HOLD_MS) {
+  if (strcmp(headLevelingStatus, "LEVELING") != 0) {
+    headPitchVelocityDegPerSec = 0.0f;
+    headRollVelocityDegPerSec = 0.0f;
+    // Keep filter progress across packet gaps. Repeatedly resetting it to
+    // the servo position can prevent small commands from ever building up.
     lastHeadUpdateMs = now;
     return;
   }
 
-  float dt = 0.02f;
+  // Give the person powering up BB-8 time to move their hands away.
+  // During this hold the head remains at the startup command.
+  if ((uint32_t)(now - headStartupMs) < HEAD_STARTUP_HOLD_MS) {
+    headLevelingStatus = "STARTUP";
+    lastHeadUpdateMs = now;
+    return;
+  }
+
+  float controlDtSec = 0.02f;
   if (lastHeadUpdateMs != 0) {
-    dt = (now - lastHeadUpdateMs) / 1000.0f;
-    dt = clampf(dt, 0.001f, 0.10f);
+    controlDtSec = (now - lastHeadUpdateMs) / 1000.0f;
+    controlDtSec = clampf(controlDtSec, 0.001f, 0.10f);
   }
   lastHeadUpdateMs = now;
 
   // Body-frame axes: forward/back uses pitch; side-to-side uses roll.
   // Verify physical servo polarity with motor power disabled.
-  float targetFB = HEAD_CENTER_DEG + HEAD_PITCH_DIRECTION * imuPitch;
-  float targetSTS = HEAD_CENTER_DEG + HEAD_ROLL_DIRECTION * imuRoll;
+  float targetFB = HEAD_CENTER_DEG + HEAD_PITCH_DIRECTION * bodyPitchDeg;
+  float targetSTS = HEAD_CENTER_DEG + HEAD_ROLL_DIRECTION * bodyRollDeg;
 
   targetFB = clampf(targetFB, HEAD_MIN_DEG, HEAD_MAX_DEG);
   targetSTS = clampf(targetSTS, HEAD_MIN_DEG, HEAD_MAX_DEG);
 
-  // Keep the normal EMA filtering, but never allow the physical command
-  // to move faster than the configured startup-safe slew rate.
-  float filteredFB = headFBCommand + HEAD_EMA_ALPHA * (targetFB - headFBCommand);
-  float filteredSTS = headSTSCommand + HEAD_EMA_ALPHA * (targetSTS - headSTSCommand);
+  if (!headFilterInitialized) {
+    filteredHeadPitchTargetDeg = headPitchCommandDeg;
+    filteredHeadRollTargetDeg = headRollCommandDeg;
+    headFilterInitialized = true;
+  }
+  // Filter the target independently of the output; the time constant keeps
+  // smoothing consistent even when control loop timing varies.
+  const float alpha = 1.0f - expf(-controlDtSec / HEAD_TARGET_FILTER_TIME_SEC);
+  filteredHeadPitchTargetDeg += alpha * (targetFB - filteredHeadPitchTargetDeg);
+  filteredHeadRollTargetDeg += alpha * (targetSTS - filteredHeadRollTargetDeg);
+  smoothHeadAxis(filteredHeadPitchTargetDeg, headPitchCommandDeg,
+                 headPitchVelocityDegPerSec, controlDtSec);
+  smoothHeadAxis(filteredHeadRollTargetDeg, headRollCommandDeg,
+                 headRollVelocityDegPerSec, controlDtSec);
 
-  float maxStep = HEAD_STARTUP_SLEW_DEG_PER_SEC * dt;
-  headFBCommand = slewToward(headFBCommand, filteredFB, maxStep);
-  headSTSCommand = slewToward(headSTSCommand, filteredSTS, maxStep);
-  headFilterInitialized = true;
-
-  setHeadForwardBack(headSTSCommand);
-  setHeadSideToSide(headFBCommand);
+  // Preserve the existing physical channel mapping on this neck assembly.
+  setHeadForwardBack(headRollCommandDeg);
+  setHeadSideToSide(headPitchCommandDeg);
 }
 
 void setSwing(float degrees) {
@@ -405,71 +559,108 @@ void setSwing(float degrees) {
   degrees = clampf(degrees, 70.0f, 117.0f);
   float difference = degrees - 90.0f + swingOffset;
 
-  setServoDegrees(SWING1_CH, 90.0f + difference);
-  setServoDegrees(SWING2_CH, 90.0f - difference);
+  setServoDegrees(PENDULUM_SERVO_1_CHANNEL, 90.0f + difference);
+  setServoDegrees(PENDULUM_SERVO_2_CHANNEL, 90.0f - difference);
 }
 
 // This flag arms/disarms the motor-control algorithm only.
 // Physical relay power is controlled exclusively by the Body Pi.
 void enableSystem() {
-  if (systemEnabled) return;
-  currentDrive = 0.0f;
-  actualDriveOutput = 0.0f;
-  smoothedBalanceCorrection = 0.0f;
-  currentPivot = 0.0f;
+  if (navigationEnabled) return;
+  rampedDriveCommand = 0.0f;
+  appliedDriveCommand = 0.0f;
+  smoothedPitchCorrectionCommand = 0.0f;
+  stopPivotPulse();
   drive(0.0f);
-  steer(0.0f);
   setSwing(SWING_CENTER_DEG);
-  systemEnabled = true;
+  navigationEnabled = true;
 }
 
 void disableSystem() {
   drive(0.0f);
-  steer(0.0f);
+  stopPivotPulse();
   setSwing(SWING_CENTER_DEG);
-  currentDrive = 0.0f;
-  actualDriveOutput = 0.0f;
-  smoothedBalanceCorrection = 0.0f;
-  currentPivot = 0.0f;
-  targetBodyTiltDeg = 0.0f;
-  commandedBodyTiltDeg = 0.0f;
-  pendulumCorrectionDeg = 0.0f;
-  pendulumIntegral = 0.0f;
-  pendulumWasActive = false;
-  systemEnabled = false;
+  rampedDriveCommand = 0.0f;
+  appliedDriveCommand = 0.0f;
+  smoothedPitchCorrectionCommand = 0.0f;
+  targetBodyRollDeg = 0.0f;
+  rampedBodyRollTargetDeg = 0.0f;
+  pendulumFeedbackCorrectionDeg = 0.0f;
+  rollErrorIntegralDegSec = 0.0f;
+  pendulumFeedbackWasActive = false;
+  navigationEnabled = false;
 }
 
 void emergencyStop(NavState reason) {
-  currentDrive = 0.0f;
-  actualDriveOutput = 0.0f;
-  smoothedBalanceCorrection = 0.0f;
-  currentPivot = 0.0f;
-  currentSwing = SWING_CENTER_DEG;
-  targetBodyTiltDeg = 0.0f;
-  commandedBodyTiltDeg = 0.0f;
-  pendulumCorrectionDeg = 0.0f;
-  pendulumIntegral = 0.0f;
-  pendulumWasActive = false;
+  rampedDriveCommand = 0.0f;
+  appliedDriveCommand = 0.0f;
+  smoothedPitchCorrectionCommand = 0.0f;
+  stopPivotPulse();
+  pendulumServoCommandDeg = SWING_CENTER_DEG;
+  targetBodyRollDeg = 0.0f;
+  rampedBodyRollTargetDeg = 0.0f;
+  pendulumFeedbackCorrectionDeg = 0.0f;
+  rollErrorIntegralDegSec = 0.0f;
+  pendulumFeedbackWasActive = false;
 
   drive(0.0f);
-  steer(0.0f);
   setSwing(SWING_CENTER_DEG);
 
-  following = false;
-  pivoting = false;
-  navState = reason;
+  isFollowingTarget = false;
+  isPivoting = false;
+  navigationState = reason;
 }
 
 // ============================================================
 // BNO085
 // ============================================================
 
-void setReports() {
-  if (!imuOK) return;
+bool setReports() {
+  if (!imuAvailable) return false;
 
-  if (!bno08x.enableReport(SH2_ROTATION_VECTOR, 10000)) {
+  if (!bodyImu.enableReport(SH2_ROTATION_VECTOR, 10000)) {
     Serial.println("WARNING: Could not enable BNO085 rotation vector");
+    return false;
   }
+  return true;
+}
+
+void initializeIMU() {
+  lastImuInitAttemptMs = millis();
+  imuAvailable = false;
+  hasHeadOrientationSample = false;
+  hasPitchSample = false;
+  pitchRateReady = false;
+  rollRateReady = false;
+  lastPitchSampleUs = 0;
+  lastRollSampleUs = 0;
+  filteredPitchRateDegPerSec = 0.0f;
+  filteredRollRateDegPerSec = 0.0f;
+
+  for (uint8_t address : IMU_I2C_ADDRESSES) {
+    // Probe first: distinguish a missing device from a failed SH-2 handshake.
+    Wire.beginTransmission(address);
+    const uint8_t busResult = Wire.endTransmission();
+    Serial.print("BNO085 probe 0x");
+    Serial.print(address, HEX);
+    Serial.print(" I2C result=");
+    Serial.println(busResult);
+    if (busResult != 0) continue;
+
+    if (!bodyImu.begin_I2C(address, &Wire)) {
+      Serial.println("WARNING: Address responds, but BNO085 initialization failed.");
+      continue;
+    }
+    imuAvailable = true;
+    if (!setReports()) {
+      imuAvailable = false;
+      continue;
+    }
+    Serial.print("BNO085 ready at 0x");
+    Serial.println(address, HEX);
+    return;
+  }
+  Serial.println("WARNING: No usable BNO085. Check IMU power, GND, SDA/SCL and interface mode. Retrying while navigation is disabled.");
 }
 
 void quaternionToEuler(float qr, float qi, float qj, float qk,
@@ -499,14 +690,23 @@ void quaternionToEuler(float qr, float qi, float qj, float qk,
 
 
 void updateIMU() {
-  if (!imuOK) return;
+  if (!imuAvailable) {
+    // Library initialization can block. Retry only with navigation disabled
+    // and motor outputs zero, so it cannot delay an active motion watchdog.
+    if (!navigationEnabled && fabsf(appliedDriveCommand) < 0.001f &&
+        fabsf(pivotMotorCommand) < 0.001f &&
+        (uint32_t)(millis() - lastImuInitAttemptMs) >= IMU_INIT_RETRY_MS) {
+      initializeIMU();
+    }
+    return;
+  }
 
-  if (bno08x.wasReset()) {
+  if (bodyImu.wasReset()) {
     setReports();
   }
 
-  while (bno08x.getSensorEvent(&sensorValue)) {
-    if (sensorValue.sensorId == SH2_ROTATION_VECTOR) {
+  while (bodyImu.getSensorEvent(&imuSensorEvent)) {
+    if (imuSensorEvent.sensorId == SH2_ROTATION_VECTOR) {
       
       // BNO085 rotated 90 degrees clockwise on new PCB.
       // Compensate for the mounting rotation.
@@ -514,10 +714,10 @@ void updateIMU() {
       const float c = 0.70710678118f; // cos(45 degrees)
       const float s = 0.70710678118f; // sin(45 degrees)
 
-      float qr = sensorValue.un.rotationVector.real;
-      float qi = sensorValue.un.rotationVector.i;
-      float qj = sensorValue.un.rotationVector.j;
-      float qk = sensorValue.un.rotationVector.k;
+      float qr = imuSensorEvent.un.rotationVector.real;
+      float qi = imuSensorEvent.un.rotationVector.i;
+      float qj = imuSensorEvent.un.rotationVector.j;
+      float qk = imuSensorEvent.un.rotationVector.k;
 
       // Apply +90 degree Z-axis correction.
       // q_corrected = q_sensor * q_mount
@@ -532,52 +732,57 @@ void updateIMU() {
       // Assign body-frame names once, here; controllers never swap axes.
       float sensorPitchDeg, sensorRollDeg;
       quaternionToEuler(correctedR, correctedI, correctedJ, correctedK,
-                        imuYaw, sensorPitchDeg, sensorRollDeg);
-      imuPitch = sensorRollDeg;  // forward/back body tilt
-      imuRoll  = sensorPitchDeg; // left/right body tilt
+                        bodyYawDeg, sensorPitchDeg, sensorRollDeg);
+      bodyPitchDeg = sensorRollDeg;  // forward/back body tilt
+      bodyRollDeg  = sensorPitchDeg; // left/right body tilt
+
+      if (isfinite(bodyPitchDeg) && isfinite(bodyRollDeg)) {
+        hasHeadOrientationSample = true;
+        lastHeadOrientationMs = millis();
+      }
 
       // Lateral body tilt and angular rate for pendulum feedback.
       // Lateral roll rate for pendulum control.
-      if (isfinite(imuRoll)) {
+      if (isfinite(bodyRollDeg)) {
         uint32_t tiltNowUs = micros();
-        if (lastLateralTiltSampleUs != 0) {
-          float sampleDt = (uint32_t)(tiltNowUs - lastLateralTiltSampleUs) * 1.0e-6f;
+        if (lastRollSampleUs != 0) {
+          float sampleDt = (uint32_t)(tiltNowUs - lastRollSampleUs) * 1.0e-6f;
           if (sampleDt >= 0.002f && sampleDt <= 0.2f) {
-            float rawRate = (imuRoll - lastLateralTiltDeg) / sampleDt;
+            float rawRate = (bodyRollDeg - previousRollDeg) / sampleDt;
             if (isfinite(rawRate)) {
-              lateralTiltRateDegS += PENDULUM_TILT_RATE_FILTER_ALPHA *
-                                     (rawRate - lateralTiltRateDegS);
-              lateralTiltRateReady = true;
+              filteredRollRateDegPerSec += PENDULUM_TILT_RATE_FILTER_ALPHA *
+                                     (rawRate - filteredRollRateDegPerSec);
+              rollRateReady = true;
             }
           } else {
-            lateralTiltRateReady = false;
-            lateralTiltRateDegS = 0.0f;
+            rollRateReady = false;
+            filteredRollRateDegPerSec = 0.0f;
           }
         }
-        lastLateralTiltDeg = imuRoll;
-        lastLateralTiltSampleUs = tiltNowUs;
-        lastLateralTiltMs = millis();
+        previousRollDeg = bodyRollDeg;
+        lastRollSampleUs = tiltNowUs;
+        lastRollUpdateMs = millis();
       }
 
-      if (isfinite(imuPitch)) {
+      if (isfinite(bodyPitchDeg)) {
         uint32_t sampleUs = micros();
-        if (lastBalanceSampleUs != 0) {
-          float sampleDt = (uint32_t)(sampleUs - lastBalanceSampleUs) * 1.0e-6f;
+        if (lastPitchSampleUs != 0) {
+          float sampleDt = (uint32_t)(sampleUs - lastPitchSampleUs) * 1.0e-6f;
           if (sampleDt >= 0.002f && sampleDt <= 0.1f) {
-            float rawRate = (imuPitch - lastBalancePitch) / sampleDt;
+            float rawRate = (bodyPitchDeg - previousPitchDeg) / sampleDt;
             if (fabsf(rawRate) < 1000.0f) {
-              filteredPitchRate += BALANCE_RATE_FILTER_ALPHA * (rawRate - filteredPitchRate);
-              balanceRateReady = true;
+              filteredPitchRateDegPerSec += BALANCE_RATE_FILTER_ALPHA * (rawRate - filteredPitchRateDegPerSec);
+              pitchRateReady = true;
             }
           } else {
-            balanceRateReady = false;
-            filteredPitchRate = 0.0f;
+            pitchRateReady = false;
+            filteredPitchRateDegPerSec = 0.0f;
           }
         }
-        lastBalancePitch = imuPitch;
-        lastBalanceSampleUs = sampleUs;
-        lastBalanceImuMs = millis();
-        balanceImuFresh = true;
+        previousPitchDeg = bodyPitchDeg;
+        lastPitchSampleUs = sampleUs;
+        lastPitchUpdateMs = millis();
+        hasPitchSample = true;
       }
     }
   }
@@ -588,27 +793,27 @@ void updateIMU() {
 // ============================================================
 
 void resetTargetFilter() {
-  haveFilteredTarget = false;
+  targetFilterInitialized = false;
 }
 
 void filterTarget(float distance, float angle) {
   angle = normalizeAngle(angle);
 
-  if (!haveFilteredTarget) {
-    filteredDistance = distance;
-    filteredAngle = angle;
-    haveFilteredTarget = true;
+  if (!targetFilterInitialized) {
+    filteredTargetDistanceFt = distance;
+    filteredTargetAngleDeg = angle;
+    targetFilterInitialized = true;
     return;
   }
 
-  filteredDistance =
+  filteredTargetDistanceFt =
       DISTANCE_FILTER_ALPHA * distance +
-      (1.0f - DISTANCE_FILTER_ALPHA) * filteredDistance;
+      (1.0f - DISTANCE_FILTER_ALPHA) * filteredTargetDistanceFt;
 
-  float error = normalizeAngle(angle - filteredAngle);
+  float error = normalizeAngle(angle - filteredTargetAngleDeg);
 
-  filteredAngle = normalizeAngle(
-      filteredAngle + ANGLE_FILTER_ALPHA * error
+  filteredTargetAngleDeg = normalizeAngle(
+      filteredTargetAngleDeg + ANGLE_FILTER_ALPHA * error
   );
 }
 
@@ -633,11 +838,22 @@ void handleCommand(char *line) {
       return;
     }
 
+    // A released stick (T,0,0) must cancel a pulse immediately, rather than
+    // letting a previously distant/sideways target decay through the EMA.
+    if (distance <= HARD_MIN_DISTANCE_FT) {
+      emergencyStop(TOO_CLOSE);
+      resetTargetFilter();
+    } else if (isPivoting && fabsf(normalizeAngle(angle)) <= PIVOT_STOP_ANGLE_DEG) {
+      // New alignment/straight command supersedes the old filtered bearing.
+      stopPivotPulse();
+      isPivoting = false;
+      filteredTargetAngleDeg = normalizeAngle(angle);
+    }
     filterTarget(distance, angle);
-    lastPacketMs = millis();
+    lastPiCommandMs = millis();
 
     // Enable navigation after first valid command; Pi owns physical relays.
-    if (!systemEnabled) enableSystem();
+    if (!navigationEnabled) enableSystem();
 
     return;
   }
@@ -651,12 +867,12 @@ void handleCommand(char *line) {
       resetTargetFilter();
 
       // Keep navigation armed. The Pi decides whether to keep relays on.
-      if (!systemEnabled) {
+      if (!navigationEnabled) {
           enableSystem();
       }
 
       // PAUSE counts as valid Pi communication.
-      lastPacketMs = millis();
+      lastPiCommandMs = millis();
 
       return;
   }
@@ -677,25 +893,46 @@ void handleCommand(char *line) {
 }
 
 void readPiSerial() {
+  // Targets describe the current control position, not motions to queue.
+  // Apply only the newest complete target buffered during this pass.
+  char latestTarget[sizeof(piReceiveBuffer)];
+  bool haveLatestTarget = false;
   while (Serial1.available()) {
     char c = (char)Serial1.read();
 
     if (c == '\r') continue;
 
     if (c == '\n') {
-      rxBuffer[rxIndex] = '\0';
-      if (rxIndex > 0) handleCommand(rxBuffer);
-      rxIndex = 0;
+      if (!piDiscardingLine && piReceiveLength > 0) {
+        piReceiveBuffer[piReceiveLength] = '\0';
+        if (piReceiveBuffer[0] == 'T' && piReceiveBuffer[1] == ',') {
+          memcpy(latestTarget, piReceiveBuffer, piReceiveLength + 1);
+          haveLatestTarget = true;
+        } else {
+          // Stop/pause are barriers: no earlier buffered target may re-arm
+          // navigation after them. A later target is a new explicit request.
+          if (strcmp(piReceiveBuffer, "STOP") == 0 ||
+              strcmp(piReceiveBuffer, "PAUSE") == 0) {
+            haveLatestTarget = false;
+          }
+          handleCommand(piReceiveBuffer);
+        }
+      }
+      piReceiveLength = 0;
+      piDiscardingLine = false;
       continue;
     }
 
-    if (rxIndex < sizeof(rxBuffer) - 1) {
-      rxBuffer[rxIndex++] = c;
+    if (piDiscardingLine) continue;
+    if (piReceiveLength < sizeof(piReceiveBuffer) - 1) {
+      piReceiveBuffer[piReceiveLength++] = c;
     } else {
-      // Overflow = discard packet safely.
-      rxIndex = 0;
+      // Discard the whole oversized line, including any command-like tail.
+      piReceiveLength = 0;
+      piDiscardingLine = true;
     }
   }
+  if (haveLatestTarget) handleCommand(latestTarget);
 }
 
 // ============================================================
@@ -704,24 +941,24 @@ void readPiSerial() {
 
 float calculateDriveSpeed(float distance) {
   if (distance <= FOLLOW_STOP_DISTANCE_FT) return 0.0f;
-  if (distance >= FULL_SPEED_DISTANCE_FT) return MAX_DRIVE_SPEED;
+  if (distance >= FULL_SPEED_DISTANCE_FT) return MAX_DRIVE_COMMAND;
 
   float progress =
       (distance - FOLLOW_STOP_DISTANCE_FT) /
       (FULL_SPEED_DISTANCE_FT - FOLLOW_STOP_DISTANCE_FT);
 
   float speed =
-      MIN_DRIVE_SPEED +
-      progress * (MAX_DRIVE_SPEED - MIN_DRIVE_SPEED);
+      MIN_DRIVE_COMMAND +
+      progress * (MAX_DRIVE_COMMAND - MIN_DRIVE_COMMAND);
 
-  return clampf(speed, MIN_DRIVE_SPEED, MAX_DRIVE_SPEED);
+  return clampf(speed, MIN_DRIVE_COMMAND, MAX_DRIVE_COMMAND);
 }
 
 float calculateSwingTarget(float angle) {
   if (fabsf(angle) <= ANGLE_DEADBAND_DEG)
     return SWING_CENTER_DEG;
 
-  float offset = angle * SWING_KP * SWING_DIRECTION;
+  float offset = angle * SWING_SERVO_DEG_PER_TARGET_DEG * SWING_DIRECTION;
   offset = clampf(offset, -MAX_SWING_OFFSET_DEG,
                   MAX_SWING_OFFSET_DEG);
 
@@ -733,32 +970,17 @@ float calculateSwingTarget(float angle) {
   return SWING_CENTER_DEG + offset;
 }
 
-float calculatePivotCommand(float angle) {
-  if (fabsf(angle) <= PIVOT_STOP_ANGLE_DEG)
-    return 0.0f;
-
-  float command = angle * PIVOT_KP * PIVOT_DIRECTION;
-
-  if (fabsf(command) > 0.0f &&
-      fabsf(command) < MIN_PIVOT_COMMAND) {
-    command = copysignf(MIN_PIVOT_COMMAND, command);
-  }
-
-  return clampf(command, -MAX_PIVOT_COMMAND,
-                MAX_PIVOT_COMMAND);
-}
-
 // Forward/backward rocking uses body pitch.
 // Damping in idle and during forward driving. This does NOT measure speed.
 // Returns zero if IMU data are stale or tilt is outside the safe control range.
 float calculateBalanceCorrection(float target) {
-  if (!ENABLE_DRIVE_STABILIZATION || !systemEnabled || !imuOK ||
-      !balanceImuFresh || !balanceRateReady ||
-      (uint32_t)(millis() - lastBalanceImuMs) > BALANCE_IMU_TIMEOUT_MS)
+  if (!ENABLE_DRIVE_STABILIZATION || !navigationEnabled || !imuAvailable ||
+      !hasPitchSample || !pitchRateReady ||
+      (uint32_t)(millis() - lastPitchUpdateMs) > BALANCE_IMU_TIMEOUT_MS)
     return 0.0f;
 
-  float tilt = imuPitch - BALANCE_PITCH_ZERO_DEG;
-  if (!isfinite(tilt) || !isfinite(filteredPitchRate) ||
+  float tilt = bodyPitchDeg - BALANCE_PITCH_ZERO_DEG;
+  if (!isfinite(tilt) || !isfinite(filteredPitchRateDegPerSec) ||
       fabsf(tilt) > BALANCE_MAX_TILT_DEG)
     return 0.0f;
 
@@ -772,76 +994,76 @@ float calculateBalanceCorrection(float target) {
   float kp = BALANCE_KP * (moving ? BALANCE_MOVING_TILT_KP_SCALE : 1.0f);
   float kd = BALANCE_KD * (moving ? BALANCE_MOVING_RATE_KD_SCALE
                                  : BALANCE_IDLE_RATE_KD_SCALE);
-  float correction = BALANCE_DIRECTION * (kp * p + kd * filteredPitchRate);
-  float limit = moving ? BALANCE_MAX_MOVING : BALANCE_MAX_STILL;
+  float correction = BALANCE_DIRECTION * (kp * p + kd * filteredPitchRateDegPerSec);
+  float limit = moving ? BALANCE_MAX_MOVING_CORRECTION : BALANCE_MAX_IDLE_CORRECTION;
   return clampf(correction, -limit, limit);
 }
 
-void commandDrive(float target, float dt) {
-  target = clampf(target, -MAX_DRIVE_SPEED, MAX_DRIVE_SPEED);
+void commandDrive(float target, float controlDtSec) {
+  target = clampf(target, -MAX_DRIVE_COMMAND, MAX_DRIVE_COMMAND);
 
-  float rate = fabsf(target) > fabsf(currentDrive)
-                   ? DRIVE_ACCEL_RATE : DRIVE_DECEL_RATE;
-  currentDrive = moveToward(currentDrive, target, rate * dt);
+  float rate = fabsf(target) > fabsf(rampedDriveCommand)
+                   ? DRIVE_ACCEL_COMMAND_PER_SEC : DRIVE_DECEL_COMMAND_PER_SEC;
+  rampedDriveCommand = moveToward(rampedDriveCommand, target, rate * controlDtSec);
 
   // Use actual ramped command to select idle vs driving control.
   // Balance angle and its derivative both come from body pitch.
-  float desiredCorrection = calculateBalanceCorrection(currentDrive);
+  float desiredCorrection = calculateBalanceCorrection(rampedDriveCommand);
   // Immediately drop correction on disabled/stale IMU or unsafe tilt.
-  bool correctionValid = ENABLE_DRIVE_STABILIZATION && systemEnabled && imuOK &&
-      balanceImuFresh && balanceRateReady &&
-      (uint32_t)(millis() - lastBalanceImuMs) <= BALANCE_IMU_TIMEOUT_MS &&
-      isfinite(imuPitch) && isfinite(filteredPitchRate) &&
-      fabsf(imuPitch - BALANCE_PITCH_ZERO_DEG) <= BALANCE_MAX_TILT_DEG;
+  bool correctionValid = ENABLE_DRIVE_STABILIZATION && navigationEnabled && imuAvailable &&
+      hasPitchSample && pitchRateReady &&
+      (uint32_t)(millis() - lastPitchUpdateMs) <= BALANCE_IMU_TIMEOUT_MS &&
+      isfinite(bodyPitchDeg) && isfinite(filteredPitchRateDegPerSec) &&
+      fabsf(bodyPitchDeg - BALANCE_PITCH_ZERO_DEG) <= BALANCE_MAX_TILT_DEG;
   if (!correctionValid) {
-    smoothedBalanceCorrection = 0.0f;
+    smoothedPitchCorrectionCommand = 0.0f;
   } else {
-    smoothedBalanceCorrection = moveToward(smoothedBalanceCorrection,
-        desiredCorrection, BALANCE_CORRECTION_SLEW_PER_SEC * dt);
+    smoothedPitchCorrectionCommand = moveToward(smoothedPitchCorrectionCommand,
+        desiredCorrection, BALANCE_CORRECTION_COMMAND_PER_SEC * controlDtSec);
   }
-  actualDriveOutput = clampf(currentDrive + smoothedBalanceCorrection,
-                              -MAX_DRIVE_SPEED, MAX_DRIVE_SPEED);
-  drive(actualDriveOutput);
+  appliedDriveCommand = clampf(rampedDriveCommand + smoothedPitchCorrectionCommand,
+                              -MAX_DRIVE_COMMAND, MAX_DRIVE_COMMAND);
+  drive(appliedDriveCommand);
 }
 
 // target is the existing feed-forward pendulum servo position.
 // The target body lean is chosen separately from the ARC state.
-void commandSwing(float target, float dt) {
+void commandSwing(float target, float controlDtSec) {
   target = clampf(target,
       SWING_CENTER_DEG - MAX_SWING_OFFSET_DEG,
       SWING_CENTER_DEG + MAX_SWING_OFFSET_DEG);
 
-  commandedBodyTiltDeg = moveToward(commandedBodyTiltDeg,
-      targetBodyTiltDeg, BODY_TILT_TARGET_SLEW_DEG_PER_SEC * dt);
+  rampedBodyRollTargetDeg = moveToward(rampedBodyRollTargetDeg,
+      targetBodyRollDeg, BODY_TILT_TARGET_SLEW_DEG_PER_SEC * controlDtSec);
 
-  pendulumCorrectionDeg = 0.0f;
-  bool imuValid = imuOK && lateralTiltRateReady &&
-      (uint32_t)(millis() - lastLateralTiltMs) <= PENDULUM_IMU_TIMEOUT_MS &&
-      isfinite(imuRoll) && isfinite(lateralTiltRateDegS) &&
-      fabsf(imuRoll - PENDULUM_TILT_ZERO_DEG) <= PENDULUM_MAX_VALID_TILT_DEG;
-  bool active = ENABLE_PENDULUM_STABILIZATION && systemEnabled && imuValid &&
-      isfinite(dt) && dt > 0.0f && dt <= 0.1f;
+  pendulumFeedbackCorrectionDeg = 0.0f;
+  bool imuValid = imuAvailable && rollRateReady &&
+      (uint32_t)(millis() - lastRollUpdateMs) <= PENDULUM_IMU_TIMEOUT_MS &&
+      isfinite(bodyRollDeg) && isfinite(filteredRollRateDegPerSec) &&
+      fabsf(bodyRollDeg - PENDULUM_TILT_ZERO_DEG) <= PENDULUM_MAX_VALID_TILT_DEG;
+  bool active = ENABLE_PENDULUM_STABILIZATION && navigationEnabled && imuValid &&
+      isfinite(controlDtSec) && controlDtSec > 0.0f && controlDtSec <= 0.1f;
 
   if (!active) {
-    pendulumIntegral = 0.0f;
-    pendulumWasActive = false;
+    rollErrorIntegralDegSec = 0.0f;
+    pendulumFeedbackWasActive = false;
   } else {
-    if (!pendulumWasActive ||
-        fabsf(commandedBodyTiltDeg - previousPendulumTargetDeg) >
+    if (!pendulumFeedbackWasActive ||
+        fabsf(rampedBodyRollTargetDeg - previousBodyRollTargetDeg) >
             PENDULUM_INTEGRAL_RESET_TARGET_CHANGE_DEG) {
-      pendulumIntegral = 0.0f;
+      rollErrorIntegralDegSec = 0.0f;
     }
-    pendulumWasActive = true;
-    previousPendulumTargetDeg = commandedBodyTiltDeg;
+    pendulumFeedbackWasActive = true;
+    previousBodyRollTargetDeg = rampedBodyRollTargetDeg;
 
-    float measuredTilt = imuRoll - PENDULUM_TILT_ZERO_DEG;
-    float tiltError = commandedBodyTiltDeg - measuredTilt;
+    float measuredTilt = bodyRollDeg - PENDULUM_TILT_ZERO_DEG;
+    float tiltError = rampedBodyRollTargetDeg - measuredTilt;
 
     // Do not integrate if the correction or final servo target would saturate.
     // This prevents the integral from building up against mechanical limits.
-    float candidateIntegral = clampf(pendulumIntegral + tiltError * dt,
-        -PENDULUM_INTEGRAL_LIMIT, PENDULUM_INTEGRAL_LIMIT);
-    float pd = PENDULUM_KP * tiltError - PENDULUM_KD * lateralTiltRateDegS;
+    float candidateIntegral = clampf(rollErrorIntegralDegSec + tiltError * controlDtSec,
+        -PENDULUM_INTEGRAL_LIMIT_DEG_SEC, PENDULUM_INTEGRAL_LIMIT_DEG_SEC);
+    float pd = PENDULUM_KP * tiltError - PENDULUM_KD * filteredRollRateDegPerSec;
     float candidateOutput = PENDULUM_CORRECTION_DIRECTION *
         (pd + PENDULUM_KI * candidateIntegral);
     float lowerServo = SWING_CENTER_DEG - MAX_SWING_OFFSET_DEG;
@@ -850,128 +1072,121 @@ void commandSwing(float target, float dt) {
     bool saturated = candidateOutput < -PENDULUM_MAX_CORRECTION_DEG ||
                      candidateOutput > PENDULUM_MAX_CORRECTION_DEG ||
                      candidateServo < lowerServo || candidateServo > upperServo;
-    if (!saturated) pendulumIntegral = candidateIntegral;
+    if (!saturated) rollErrorIntegralDegSec = candidateIntegral;
 
-    pendulumCorrectionDeg = clampf(PENDULUM_CORRECTION_DIRECTION *
-        (pd + PENDULUM_KI * pendulumIntegral),
+    pendulumFeedbackCorrectionDeg = clampf(PENDULUM_CORRECTION_DIRECTION *
+        (pd + PENDULUM_KI * rollErrorIntegralDegSec),
         -PENDULUM_MAX_CORRECTION_DEG, PENDULUM_MAX_CORRECTION_DEG);
   }
 
   // Preserve arc feed-forward and apply bounded PID correction.
-  float servoTarget = clampf(target + pendulumCorrectionDeg,
+  float servoTarget = clampf(target + pendulumFeedbackCorrectionDeg,
       SWING_CENTER_DEG - MAX_SWING_OFFSET_DEG,
       SWING_CENTER_DEG + MAX_SWING_OFFSET_DEG);
-  currentSwing = moveToward(currentSwing, servoTarget,
-      SWING_SLEW_RATE_DEG_PER_SEC * dt);
-  setSwing(currentSwing);
+  pendulumServoCommandDeg = moveToward(pendulumServoCommandDeg, servoTarget,
+      SWING_SLEW_RATE_DEG_PER_SEC * controlDtSec);
+  setSwing(pendulumServoCommandDeg);
 }
 
-void controlledStop(float dt) {
-  currentPivot = 0.0f;
-  steer(0.0f);
-  commandDrive(0.0f, dt);
-  commandSwing(SWING_CENTER_DEG, dt);
+void controlledStop(float controlDtSec) {
+  stopPivotPulse();
+  commandDrive(0.0f, controlDtSec);
+  commandSwing(SWING_CENTER_DEG, controlDtSec);
 }
 
-void navigationUpdate(float dt) {
-  targetBodyTiltDeg = 0.0f;
-  if (!haveFilteredTarget) {
-    controlledStop(dt);
-    navState = WAITING_FOR_PI;
+void navigationUpdate(float controlDtSec) {
+  targetBodyRollDeg = 0.0f;
+  if (!targetFilterInitialized) {
+    controlledStop(controlDtSec);
+    navigationState = WAITING_FOR_PI;
     return;
   }
 
-  float distance = filteredDistance;
-  float angle = normalizeAngle(filteredAngle);
+  float distance = filteredTargetDistanceFt;
+  float angle = normalizeAngle(filteredTargetAngleDeg);
 
   if (distance <= HARD_MIN_DISTANCE_FT) {
     // Close target: halt navigation, but keep IMU rocking damping active.
-    // controlledStop() calls commandDrive(0, dt), which computes and
+    // controlledStop() calls commandDrive(0, controlDtSec), which computes and
     // actually sends the balance-corrected motor command every cycle.
     // Unlike emergencyStop(), it does not erase balance correction.
-    navState = TOO_CLOSE;
-    following = false;
-    pivoting = false;
-    controlledStop(dt);
+    navigationState = TOO_CLOSE;
+    isFollowingTarget = false;
+    isPivoting = false;
+    controlledStop(controlDtSec);
     return;
   }
 
   // Follow-distance hysteresis
-  if (!following) {
+  if (!isFollowingTarget) {
     if (distance < FOLLOW_START_DISTANCE_FT) {
-      navState = IN_LEASH_ZONE;
-      controlledStop(dt);
+      navigationState = IN_LEASH_ZONE;
+      controlledStop(controlDtSec);
       return;
     }
-    following = true;
+    isFollowingTarget = true;
   } else {
     if (distance <= FOLLOW_STOP_DISTANCE_FT) {
-      following = false;
-      pivoting = false;
-      navState = TARGET_REACHED;
-      controlledStop(dt);
+      isFollowingTarget = false;
+      isPivoting = false;
+      navigationState = TARGET_REACHED;
+      controlledStop(controlDtSec);
       return;
     }
   }
 
   // Continue an existing pivot until aligned.
-  if (pivoting) {
+  if (isPivoting) {
     if (fabsf(angle) <= PIVOT_STOP_ANGLE_DEG) {
-      pivoting = false;
-      currentPivot = 0.0f;
-      steer(0.0f);
+      isPivoting = false;
+      stopPivotPulse();
     } else {
-      navState = PIVOT;
-      commandDrive(0.0f, dt);
-      commandSwing(SWING_CENTER_DEG, dt);
-      currentPivot = calculatePivotCommand(angle);
-      steer(currentPivot);
+      navigationState = PIVOT;
+      commandDrive(0.0f, controlDtSec);
+      commandSwing(SWING_CENTER_DEG, controlDtSec);
+      commandPivotPulse(angle);
       return;
     }
   }
 
   // Target behind BB-8.
   if (fabsf(angle) >= REAR_PIVOT_ANGLE_DEG) {
-    navState = PIVOT;
-    pivoting = true;
-    commandDrive(0.0f, dt);
-    commandSwing(SWING_CENTER_DEG, dt);
-    currentPivot = calculatePivotCommand(angle);
-    steer(currentPivot);
+    navigationState = PIVOT;
+    isPivoting = true;
+    commandDrive(0.0f, controlDtSec);
+    commandSwing(SWING_CENTER_DEG, controlDtSec);
+    commandPivotPulse(angle);
     return;
   }
 
   // Straight.
   if (fabsf(angle) <= ANGLE_DEADBAND_DEG) {
-    navState = STRAIGHT;
-    currentPivot = 0.0f;
-    steer(0.0f);
-    commandSwing(SWING_CENTER_DEG, dt);
-    commandDrive(calculateDriveSpeed(distance), dt);
+    navigationState = STRAIGHT;
+    stopPivotPulse();
+    commandSwing(SWING_CENTER_DEG, controlDtSec);
+    commandDrive(calculateDriveSpeed(distance), controlDtSec);
     return;
   }
 
   // Close + significant angle => pivot.
   if (distance <= CLOSE_NAV_DISTANCE_FT &&
       fabsf(angle) >= CLOSE_PIVOT_START_ANGLE_DEG) {
-    navState = PIVOT;
-    pivoting = true;
-    commandDrive(0.0f, dt);
-    commandSwing(SWING_CENTER_DEG, dt);
-    currentPivot = calculatePivotCommand(angle);
-    steer(currentPivot);
+    navigationState = PIVOT;
+    isPivoting = true;
+    commandDrive(0.0f, controlDtSec);
+    commandSwing(SWING_CENTER_DEG, controlDtSec);
+    commandPivotPulse(angle);
     return;
   }
 
   // Otherwise arc. Target a modest lean into the turn.
-  navState = ARC;
-  targetBodyTiltDeg = clampf(filteredAngle *
+  navigationState = ARC;
+  targetBodyRollDeg = clampf(filteredTargetAngleDeg *
       ARC_BODY_LEAN_DEG_PER_TARGET_DEG * ARC_LEAN_DIRECTION,
       -MAX_ARC_BODY_LEAN_DEG, MAX_ARC_BODY_LEAN_DEG);
-  currentPivot = 0.0f;
-  steer(0.0f);
-  commandSwing(calculateSwingTarget(angle), dt);
-  commandDrive(calculateDriveSpeed(distance), dt);
+  stopPivotPulse();
+  commandSwing(calculateSwingTarget(angle), controlDtSec);
+  commandDrive(calculateDriveSpeed(distance), controlDtSec);
 }
 
 // ============================================================
@@ -980,69 +1195,74 @@ void navigationUpdate(float dt) {
 
 void sendStatus() {
   Serial1.print("S=");
-  Serial1.print(stateName(navState));
+  Serial1.print(stateName(navigationState));
   Serial1.print(", Distance=");
-  Serial1.print(filteredDistance, 2);
+  Serial1.print(filteredTargetDistanceFt, 2);
   Serial1.print(", Angle=");
-  Serial1.print(filteredAngle, 2);
+  Serial1.print(filteredTargetAngleDeg, 2);
   Serial1.print(", Drive=");
-  //Serial1.print(imuPitch, 2);
+  //Serial1.print(bodyPitchDeg, 2);
   //Serial1.print(", ");
-  //Serial1.print(imuRoll, 2);
+  //Serial1.print(bodyRollDeg, 2);
   //Serial1.print(", ");
-  Serial1.print(currentDrive, 3);
+  Serial1.print(rampedDriveCommand, 3);
   Serial1.print(", Swing=");
-  Serial1.print(currentSwing, 1);
+  Serial1.print(pendulumServoCommandDeg, 1);
   Serial1.print(", Pivot=");
-  Serial1.println(currentPivot, 3);
+  Serial1.println(pivotMotorCommand, 3);
 
   Serial.print("State=");
-  Serial.print(stateName(navState));
+  Serial.print(stateName(navigationState));
   Serial.print(" D=");
-  Serial.print(filteredDistance, 1);
+  Serial.print(filteredTargetDistanceFt, 1);
   Serial.print(" A=");
-  Serial.print(filteredAngle, 1);
+  Serial.print(filteredTargetAngleDeg, 1);
   Serial.print(" Pitch=");
-  Serial.print(imuPitch, 1);
+  Serial.print(bodyPitchDeg, 1);
   Serial.print(" Roll=");
-  Serial.print(imuRoll, 1);
+  Serial.print(bodyRollDeg, 1);
   Serial.print(" Drive=");
-  Serial.print(currentDrive, 2);
+  Serial.print(rampedDriveCommand, 2);
   Serial.print(" Applied=");
-  Serial.print(actualDriveOutput, 2);
+  Serial.print(appliedDriveCommand, 2);
   Serial.print(" PitchRate=");
-  Serial.print(filteredPitchRate, 1);
+  Serial.print(filteredPitchRateDegPerSec, 1);
   Serial.print(" Swing=");
-  Serial.print(currentSwing, 1);
+  Serial.print(pendulumServoCommandDeg, 1);
   Serial.print(" TiltTarget=");
-  Serial.print(commandedBodyTiltDeg, 1);
+  Serial.print(rampedBodyRollTargetDeg, 1);
   Serial.print(" TiltRate=");
-  Serial.print(lateralTiltRateDegS, 1);
+  Serial.print(filteredRollRateDegPerSec, 1);
   Serial.print(" PendCorr=");
-  Serial.print(pendulumCorrectionDeg, 2);
+  Serial.print(pendulumFeedbackCorrectionDeg, 2);
   Serial.print(" Pivot=");
-  Serial.print(currentPivot, 2);
+  Serial.print(pivotMotorCommand, 2);
   Serial.print(" HeadFB=");
-  Serial.print(headFBCommand, 1);
+  Serial.print(headPitchCommandDeg, 1);
   Serial.print(" HeadSTS=");
-  Serial.print(headSTSCommand, 1);
+  Serial.print(headRollCommandDeg, 1);
+  Serial.print(" HeadMode=");
+  Serial.print(headLevelingStatus);
+  Serial.print(" HeadAgeMs=");
+  if (hasHeadOrientationSample) Serial.print((uint32_t)(millis() - lastHeadOrientationMs));
+  else Serial.print("NONE");
   Serial.print(" Enabled=");
-  Serial.print(systemEnabled);
+  Serial.print(navigationEnabled);
 
   Serial.print(" IMU=");
-  Serial.print(imuOK);
+  Serial.print(imuAvailable);
 
   Serial.print(" Fresh=");
   Serial.print(
-    balanceImuFresh &&
-    (millis() - lastBalanceImuMs <= BALANCE_IMU_TIMEOUT_MS)
+    hasPitchSample &&
+    (millis() - lastPitchUpdateMs <= BALANCE_IMU_TIMEOUT_MS)
   );
 
   Serial.print(" RateReady=");
-  Serial.print(balanceRateReady);
+  Serial.print(pitchRateReady);
 
   Serial.print(" Balance=");
-  Serial.print(smoothedBalanceCorrection, 4);
+  Serial.print(smoothedPitchCorrectionCommand, 4);
   Serial.println();
 }
 
@@ -1069,8 +1289,8 @@ void setup() {
 
   Wire.begin();
 
-  pca.begin();
-  pca.setPWMFreq(50);
+  servoDriver.begin();
+  servoDriver.setPWMFreq(50);
   setSwing(SWING_CENTER_DEG);
   centerHead();
 
@@ -1078,16 +1298,10 @@ void setup() {
   headStartupMs = millis();
   lastHeadUpdateMs = headStartupMs;
 
-  // BNO085 on default I2C address.
-  imuOK = bno08x.begin_I2C();
-  if (imuOK) {
-    Serial.println("BNO085 detected.");
-    setReports();
-  } else {
-    Serial.println("WARNING: BNO085 not detected. Motor control will still run without stabilization.");
-  }
+  // Support either BNO085 address and retry a late-powered sensor while idle.
+  initializeIMU();
 
-  navState = WAITING_FOR_PI;
+  navigationState = WAITING_FOR_PI;
   Serial.println(ENABLE_DRIVE_STABILIZATION ?
     "IMU drive stabilization ENABLED" : "IMU drive stabilization DISABLED (safety default)");
 
@@ -1106,8 +1320,8 @@ void loop() {
   uint32_t nowMs = millis();
 
   // Hardware-level communication watchdog.
-  if (systemEnabled &&
-      (uint32_t)(nowMs - lastPacketMs) > PI_TIMEOUT_MS) {
+  if (navigationEnabled &&
+      (uint32_t)(nowMs - lastPiCommandMs) > PI_TIMEOUT_MS) {
     emergencyStop(COMMS_LOST);
     disableSystem();
     resetTargetFilter();
@@ -1115,20 +1329,20 @@ void loop() {
 
   uint32_t nowUs = micros();
 
-  if ((uint32_t)(nowUs - lastControlUs) >= CONTROL_PERIOD_US) {
-    float dt;
+  if ((uint32_t)(nowUs - lastControlUpdateUs) >= CONTROL_PERIOD_US) {
+    float controlDtSec;
 
-    if (lastControlUs == 0) {
-      dt = 0.02f;
+    if (lastControlUpdateUs == 0) {
+      controlDtSec = 0.02f;
     } else {
-      dt = (nowUs - lastControlUs) / 1000000.0f;
-      dt = clampf(dt, 0.001f, 0.10f);
+      controlDtSec = (nowUs - lastControlUpdateUs) / 1000000.0f;
+      controlDtSec = clampf(controlDtSec, 0.001f, 0.10f);
     }
 
-    lastControlUs = nowUs;
+    lastControlUpdateUs = nowUs;
 
-    if (systemEnabled) {
-      navigationUpdate(dt);
+    if (navigationEnabled) {
+      navigationUpdate(controlDtSec);
     }
 
     // Keep the head level from the latest BNO085 pitch/roll reading.
@@ -1136,8 +1350,8 @@ void loop() {
     updateHeadLeveling();
   }
 
-  if ((uint32_t)(nowMs - lastStatusMs) >= STATUS_PERIOD_MS) {
-    lastStatusMs = nowMs;
+  if ((uint32_t)(nowMs - lastStatusSentMs) >= STATUS_PERIOD_MS) {
+    lastStatusSentMs = nowMs;
     sendStatus();
   }
 }

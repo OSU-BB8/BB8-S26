@@ -21,7 +21,7 @@ Controls:
         Magnitude = target distance (0 to MAX_TARGET_DISTANCE_FT)
 
     X:
-        Emergency motor stop while held; centered stick otherwise sends T,0,0
+        Emergency motor stop while held; centered stick otherwise sends PAUSE
 
     PS button:
         Emergency stop and exit
@@ -38,6 +38,14 @@ import time
 import pygame
 import serial
 from BB8_Relays import BB8Relays
+try:
+    from bb8_mirror_tx import MirrorTX
+except ModuleNotFoundError as exc:
+    if exc.name != "bb8_mirror_tx":
+        raise
+    MirrorTX = None
+    print("[MIRROR] Optional bb8_mirror_tx.py missing; test-stand mirroring disabled.", flush=True)
+MIRROR = MirrorTX("PS5") if MirrorTX is not None else None
 
 
 # =========================
@@ -49,7 +57,7 @@ TEENSY_BAUD = 115200
 SEND_PERIOD = 0.02                 # 50 Hz, matching the Teensy control loop
 
 MAX_TARGET_DISTANCE_FT = 20.0
-STICK_DEADZONE = 0.10
+STICK_DEADZONE = 0.25  # Suppress the ~20% resting deflection seen in release logs
 
 # DualSense / pygame mappings used by the previous controller program.
 LEFT_STICK_X_AXIS = 0
@@ -85,15 +93,30 @@ class TeensyLink:
         self.reader.start()
 
     def send_target(self, distance_ft, angle_deg):
+        if float(distance_ft) <= 0.0:
+            self.send_pause()
+            return
         packet = f"T,{float(distance_ft):.3f},{float(angle_deg):.3f}\n"
         with self.write_lock:
             self.ser.write(packet.encode("ascii"))
+            if MIRROR is not None:
+                MIRROR.send(distance_ft, angle_deg)
+
+    def send_pause(self):
+        # Stick release cancels Teensy navigation/filter/pulse state explicitly.
+        # Keep Pi-controlled relay power unchanged, as with the previous T,0,0.
+        with self.write_lock:
+            self.ser.write(b"PAUSE\n")
+            if MIRROR is not None:
+                MIRROR.send(stop=True)
 
     def send_stop(self):
 
         with self.write_lock:
             self.ser.write(b"STOP\n")
             self.ser.flush()
+            if MIRROR is not None:
+                MIRROR.send(stop=True)
 
     def close(self):
         self.running = False
@@ -235,8 +258,9 @@ def main():
         while True:
             loop_start = time.monotonic()
 
-            # Required so pygame refreshes controller state.
-            pygame.event.pump()
+            # Drain events as well as updating joystick state. Leaving motion
+            # events queued can fill pygame's queue during prolonged steering.
+            pygame.event.get()
 
             ps_down = bool(joystick.get_button(PS_BUTTON))
             x_down = bool(joystick.get_button(X_BUTTON))
@@ -261,10 +285,13 @@ def main():
                 continue
             x_latched = False
 
+            was_target_active = target_active
             distance_ft, angle_deg = stick_to_target(joystick)
             if distance_ft <= 0.0:
                 distance_ft, angle_deg = 0.0, 0.0
                 target_active = False
+                if was_target_active:
+                    print("[IDLE] Stick neutral; sending PAUSE to cancel pivot.")
             else:
                 target_active = True
 
@@ -282,7 +309,7 @@ def main():
                 continue
 
             try:
-                if not relays.enabled:
+                if target_active and not relays.enabled:
                     link.send_stop()   # Clear stale Teensy navigation state
                     relays.enable()    # Includes 150 ms contact settling
                 link.send_target(distance_ft, angle_deg)

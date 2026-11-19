@@ -5,6 +5,14 @@ Run from the same folder as BB8_Relays.py. No other process may own /dev/serial0
 import time
 import serial
 from BB8_Relays import BB8Relays
+try:
+    from bb8_mirror_tx import MirrorTX
+except ModuleNotFoundError as exc:
+    if exc.name != "bb8_mirror_tx":
+        raise
+    MirrorTX = None
+    print("[MIRROR] Optional bb8_mirror_tx.py missing; test-stand mirroring disabled.", flush=True)
+MIRROR = MirrorTX("DEMO") if MirrorTX is not None else None
 
 PORT = '/dev/serial0'
 BAUD = 115200
@@ -29,6 +37,8 @@ movements = [
 
 def send_target(ser, distance, angle):
     ser.write(f'T,{distance:.3f},{angle:.3f}\n'.encode('ascii'))
+    if MIRROR is not None:
+        MIRROR.send(distance, angle)
 
 def run_target(ser, name, distance, angle, duration):
     print(f'{name:<15} | D={distance:5.1f} ft | A={angle:6.1f} deg')
@@ -46,6 +56,8 @@ def main():
         time.sleep(0.3)
         # Make sure the Teensy cannot run an old command.
         ser.write(b'STOP\n')
+        if MIRROR is not None:
+            MIRROR.send(stop=True)
         ser.flush()
         print('Enabling relays and allowing contacts to settle...')
         relays.enable()  # 150 ms delay inside helper
@@ -63,6 +75,8 @@ def main():
         if ser is not None:
             try:
                 ser.write(b'STOP\n')
+                if MIRROR is not None:
+                    MIRROR.send(stop=True)
                 ser.flush()
             except (serial.SerialException, OSError):
                 pass
