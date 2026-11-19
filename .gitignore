@@ -11,3 +11,4 @@ test/scene/*
 backups/*
 **secret*
 .claude/
+.history
